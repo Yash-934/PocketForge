@@ -22,6 +22,20 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Ensure Native Submodules
+        run: |
+          mkdir -p third_party
+          if [ ! -f third_party/proot/src/cli/proot.c ]; then
+            echo "Cloning proot..."
+            rm -rf third_party/proot
+            git clone --depth 1 https://github.com/termux/proot.git third_party/proot
+          fi
+          if [ ! -f third_party/libandroid-shmem/shmem.c ]; then
+            echo "Cloning libandroid-shmem..."
+            rm -rf third_party/libandroid-shmem
+            git clone --depth 1 https://github.com/termux/libandroid-shmem.git third_party/libandroid-shmem
+          fi
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
