@@ -3,6 +3,7 @@ package com.pocketforge.mobile.runtime
 import android.content.Context
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.pocketforge.mobile.BuildConfig
 import com.pocketforge.mobile.model.ChatMessage
 import com.pocketforge.mobile.model.ChangeItem
 import com.pocketforge.mobile.model.DiffLine
@@ -398,7 +399,7 @@ class ClaudeRuntimeBridge(
                             risk = risk,
                         )
                         pending[approvalId] = PendingPermission(request, response)
-                        eventBus.emit(RuntimeEvent.ToolRequested(request))
+                        eventBus.emit(RuntimeEvent.ToolRequested(sessionId, request))
                     }
                 }.onFailure { error ->
                     Log.e("ClaudeBridge", "Invalid permission request $approvalId; denying", error)
@@ -909,10 +910,6 @@ class ClaudeRuntimeBridge(
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private companion object {
-        val REMEMBERABLE_REVIEW_TOOLS = setOf("Write", "Edit", "NotebookEdit")
-    }
-
     private fun classifyRisk(tool: String, command: String?): RiskLevel {
         val preview = "${tool.lowercase()} ${command.orEmpty().lowercase()}"
         return when {
@@ -1027,6 +1024,7 @@ class ClaudeRuntimeBridge(
     private class ProviderSessionException(message: String) : IllegalStateException(message)
 
     companion object {
+        val REMEMBERABLE_REVIEW_TOOLS = setOf("Write", "Edit", "NotebookEdit")
         private const val MAX_DIFF_LINES = 2_000
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3

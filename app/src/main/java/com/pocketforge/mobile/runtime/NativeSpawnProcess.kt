@@ -8,7 +8,8 @@ import java.io.InputStream
 import java.io.OutputStream
 
 internal class NativeSpawnProcess private constructor(
-    private val pid: Int,
+    private val pid: Int?,
+    private val fallbackProcess: Process?,
     internal val outputFile: File,
     private val stdin: OutputStream,
 ) : Process() {
@@ -20,27 +21,47 @@ internal class NativeSpawnProcess private constructor(
 
     override fun waitFor(): Int {
         result?.let { return it }
-        return NativeSpawn.waitFor(pid, false).also { result = it }
+        return if (pid != null && NativeSpawn.isAvailable) {
+            NativeSpawn.waitFor(pid, false).also { result = it }
+        } else {
+            (fallbackProcess?.waitFor() ?: 0).also { result = it }
+        }
     }
 
     override fun exitValue(): Int {
         result?.let { return it }
-        val status = NativeSpawn.waitFor(pid, true)
-        if (status == NativeSpawn.STILL_RUNNING) throw IllegalThreadStateException("Process is still running")
-        return status.also { result = it }
+        if (pid != null && NativeSpawn.isAvailable) {
+            val status = NativeSpawn.waitFor(pid, true)
+            if (status == NativeSpawn.STILL_RUNNING) throw IllegalThreadStateException("Process is still running")
+            return status.also { result = it }
+        } else {
+            return (fallbackProcess?.exitValue() ?: 0).also { result = it }
+        }
     }
 
     override fun destroy() {
-        NativeSpawn.kill(pid, 15)
+        if (pid != null && NativeSpawn.isAvailable) {
+            NativeSpawn.kill(pid, 15)
+        } else {
+            fallbackProcess?.destroy()
+        }
     }
 
     /** Send the same interrupt signal produced by Ctrl+C in a real terminal. */
     internal fun interrupt() {
-        NativeSpawn.kill(pid, 2)
+        if (pid != null && NativeSpawn.isAvailable) {
+            NativeSpawn.kill(pid, 2)
+        } else {
+            fallbackProcess?.destroy()
+        }
     }
 
     override fun destroyForcibly(): Process {
-        NativeSpawn.kill(pid, 9)
+        if (pid != null && NativeSpawn.isAvailable) {
+            NativeSpawn.kill(pid, 9)
+        } else {
+            fallbackProcess?.destroyForcibly()
+        }
         return this
     }
 
@@ -49,15 +70,31 @@ internal class NativeSpawnProcess private constructor(
     companion object {
         fun start(argv: List<String>, environment: Map<String, String>, cwd: String, outputFile: File): NativeSpawnProcess {
             outputFile.parentFile?.mkdirs()
-            val spawned = NativeSpawn.spawn(
-                argv.toTypedArray(),
-                environment.map { "${it.key}=${it.value}" }.toTypedArray(),
-                cwd,
-                outputFile.absolutePath,
-            )
-            check(spawned.size == 2 && spawned[0] > 0) { "Native runtime launch failed" }
-            val input = ParcelFileDescriptor.AutoCloseOutputStream(ParcelFileDescriptor.adoptFd(spawned[1]))
-            return NativeSpawnProcess(spawned[0], outputFile, input)
+            if (NativeSpawn.isAvailable) {
+                val spawned = runCatching {
+                    NativeSpawn.spawn(
+                        argv.toTypedArray(),
+                        environment.map { "${it.key}=${it.value}" }.toTypedArray(),
+                        cwd,
+                        outputFile.absolutePath,
+                    )
+                }.getOrNull()
+                if (spawned != null && spawned.size == 2 && spawned[0] > 0) {
+                    val input = ParcelFileDescriptor.AutoCloseOutputStream(ParcelFileDescriptor.adoptFd(spawned[1]))
+                    return NativeSpawnProcess(spawned[0], null, outputFile, input)
+                }
+            }
+
+            val pb = ProcessBuilder(argv)
+            val workDir = File(cwd)
+            if (workDir.isDirectory) {
+                pb.directory(workDir)
+            }
+            pb.environment().putAll(environment)
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(outputFile))
+            pb.redirectError(ProcessBuilder.Redirect.appendTo(outputFile))
+            val fallback = pb.start()
+            return NativeSpawnProcess(null, fallback, outputFile, fallback.outputStream)
         }
     }
 }
@@ -65,9 +102,10 @@ internal class NativeSpawnProcess private constructor(
 private object NativeSpawn {
     const val STILL_RUNNING = -2
 
-    init {
+    val isAvailable: Boolean = runCatching {
         System.loadLibrary("pocketspawn")
-    }
+        true
+    }.getOrDefault(false)
 
     external fun spawn(argv: Array<String>, environment: Array<String>, cwd: String, outputFile: String): IntArray
     external fun waitFor(pid: Int, noHang: Boolean): Int
