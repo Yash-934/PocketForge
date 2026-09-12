@@ -3,6 +3,8 @@ package com.pocketforge.mobile.ui
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -25,22 +27,28 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
@@ -50,6 +58,8 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +68,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -73,6 +85,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -80,10 +93,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pocketforge.mobile.BuildConfig
+import com.pocketforge.mobile.localmodel.LocalModelMetadata
+import com.pocketforge.mobile.model.AiMode
 import com.pocketforge.mobile.model.DevStack
 import com.pocketforge.mobile.model.ProviderKind
 import com.pocketforge.mobile.model.ProviderProfile
@@ -92,9 +109,10 @@ import com.pocketforge.mobile.network.DiscoveredModel
 import com.pocketforge.mobile.network.ModelDiscoveryResult
 import com.pocketforge.mobile.ui.theme.AppThemeMode
 import com.pocketforge.mobile.ui.theme.PocketOrange
+import com.pocketforge.mobile.webchat.WebChatProvider
 import kotlinx.coroutines.launch
 
-private enum class SettingsSection { CONNECTION, APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
+private enum class SettingsSection { AI_MODE, CONNECTION, APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,6 +122,7 @@ fun SettingsScreen(
     onDiscoverModels: suspend (ProviderProfile, String) -> ModelDiscoveryResult,
     onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
     onSetThemeMode: (AppThemeMode) -> Unit,
+    onSetAiMode: (AiMode) -> Unit = {},
     onPing: () -> Unit,
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
@@ -111,6 +130,15 @@ fun SettingsScreen(
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
+    onImportLocalModel: (Uri) -> Unit = {},
+    onLoadLocalModel: (LocalModelMetadata) -> Unit = {},
+    onUnloadLocalModel: () -> Unit = {},
+    onDeleteLocalModel: (String) -> Unit = {},
+    onVerifyLocalModelSha256: (String) -> Unit = {},
+    onOpenModelGallery: () -> Unit = {},
+    onOpenWebCompanion: () -> Unit = {},
+    onSetWebCompanionProvider: (WebChatProvider) -> Unit = {},
+    onSetWebCompanionCustomUrl: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -267,6 +295,229 @@ fun SettingsScreen(
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+
+            item {
+                SettingsAccordion(
+                    title = "AI mode",
+                    subtitle = "${state.aiMode.title} · ${if (state.aiMode == AiMode.CLAUDE_CODE) "Default + Primary" else "Active"}",
+                    icon = Icons.Default.SmartToy,
+                    expanded = expanded == SettingsSection.AI_MODE,
+                    onClick = { toggle(SettingsSection.AI_MODE) },
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = "Select your AI agent execution mode. Claude Code is the primary autonomous coding agent with PRoot terminal sandbox and tool use.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 18.sp,
+                        )
+
+                        AiMode.entries.forEach { mode ->
+                            val isSelected = state.aiMode == mode
+                            val isEnabled = mode.isAvailable
+
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable(enabled = isEnabled) {
+                                        onSetAiMode(mode)
+                                    },
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                                } else if (isEnabled) {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
+                                },
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else if (isEnabled) {
+                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+                                    },
+                                ),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = if (isEnabled) { { onSetAiMode(mode) } } else null,
+                                        enabled = isEnabled,
+                                        colors = RadioButtonDefaults.colors(
+                                            selectedColor = MaterialTheme.colorScheme.primary,
+                                            unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isEnabled) 0.6f else 0.25f),
+                                            disabledSelectedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                                            disabledUnselectedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f),
+                                        ),
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Text(
+                                                text = mode.title,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isEnabled) {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                                                },
+                                            )
+                                            mode.badgeText?.let { badge ->
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = if (mode.isAvailable) {
+                                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                                                    },
+                                                ) {
+                                                    Text(
+                                                        text = badge,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = if (mode.isAvailable) {
+                                                            MaterialTheme.colorScheme.primary
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                                        },
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            text = mode.subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (isEnabled) {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                            },
+                                            lineHeight = 16.sp,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (state.aiMode == AiMode.AUTO) {
+                            Spacer(Modifier.height(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = PocketOrange,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Text(
+                                            "Auto AI Routing Rules",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                        )
+                                    }
+                                    Text(
+                                        "Auto AI dynamically evaluates each prompt to choose the optimal engine:",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("•", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "Offline / No Connection → Always uses Local on-device GGUF model",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("•", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "Simple Explanations & Quick Edits → Local on-device model",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("•", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "Complex Architecture, Tools & Multi-file Edits → Claude Code",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("•", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "Claude Unavailable / Fallback → Configured Local or API engine",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("•", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                "Paid API Protection → Paid endpoints are never called silently without transparent UI labeling",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (state.aiMode == AiMode.LOCAL_MODEL) {
+                            Spacer(Modifier.height(16.dp))
+                            LocalModelManagerSection(
+                                state = state,
+                                onImportLocalModel = onImportLocalModel,
+                                onLoadLocalModel = onLoadLocalModel,
+                                onUnloadLocalModel = onUnloadLocalModel,
+                                onDeleteLocalModel = onDeleteLocalModel,
+                                onVerifyLocalModelSha256 = onVerifyLocalModelSha256,
+                                onOpenModelGallery = onOpenModelGallery,
+                            )
+                        }
+
+                        if (state.aiMode == AiMode.WEB_CHAT) {
+                            Spacer(Modifier.height(16.dp))
+                            WebChatCompanionSettingsSection(
+                                state = state,
+                                onOpenCompanion = onOpenWebCompanion,
+                                onSetProvider = onSetWebCompanionProvider,
+                                onSetCustomUrl = onSetWebCompanionCustomUrl,
+                            )
+                        }
+                    }
+                }
+            }
 
             item {
                 SettingsAccordion(
@@ -727,3 +978,435 @@ private fun DebugUpdateChannelSection(
         }
     }
 }
+
+@Composable
+private fun LocalModelManagerSection(
+    state: AppUiState,
+    onImportLocalModel: (Uri) -> Unit,
+    onLoadLocalModel: (LocalModelMetadata) -> Unit,
+    onUnloadLocalModel: () -> Unit,
+    onDeleteLocalModel: (String) -> Unit,
+    onVerifyLocalModelSha256: (String) -> Unit,
+    onOpenModelGallery: () -> Unit,
+) {
+    val picker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri != null) onImportLocalModel(uri)
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Local GGUF Models",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onOpenModelGallery,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Gallery", fontSize = 12.sp)
+                }
+                OutlinedButton(
+                    onClick = { picker.launch("*/*") },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import", fontSize = 12.sp)
+                }
+            }
+        }
+
+        // Import progress if active
+        if (state.localModelImportProgress != null || state.localModelImportStatus != null) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Model Import / Verification",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    state.localModelImportProgress?.let { prog ->
+                        LinearProgressIndicator(
+                            progress = { prog },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                        )
+                    }
+                    state.localModelImportStatus?.let { status ->
+                        Text(
+                            text = status,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
+        }
+
+        val active = state.activeLocalModel
+        if (active != null) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(
+                    1.5.dp,
+                    if (state.isLocalModelLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = active.name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = "${active.architecture.uppercase()} · ${active.quantization} · ${active.formattedSize}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (state.isLocalModelLoaded) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant,
+                        ) {
+                            Text(
+                                text = if (state.isLocalModelLoaded) "Loaded in RAM" else "Ready",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (state.isLocalModelLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+
+                    // Metadata chips
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        ModelSpecChip(label = "Context", value = "${active.contextLength}")
+                        ModelSpecChip(label = "Layers", value = "${active.blockCount}")
+                        ModelSpecChip(label = "Est. RAM", value = active.formattedEstimatedRam)
+                    }
+
+                    // Device resource status
+                    state.localModelResourceReport?.let { report ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "RAM: ${report.ramStatusMessage}",
+                                fontSize = 11.sp,
+                                color = if (report.isRamSufficient) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                text = "Storage: ${report.storageStatusMessage}",
+                                fontSize = 11.sp,
+                                color = if (report.isStorageSufficient) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "SHA-256: ${active.formattedShortSha}",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+
+                    // Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (state.isLocalModelLoaded) {
+                            OutlinedButton(
+                                onClick = onUnloadLocalModel,
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 8.dp),
+                            ) {
+                                Text("Unload RAM", fontSize = 12.sp)
+                            }
+                        } else {
+                            Button(
+                                onClick = { onLoadLocalModel(active) },
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(vertical = 8.dp),
+                            ) {
+                                Text("Load into RAM", fontSize = 12.sp)
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { onVerifyLocalModelSha256(active.id) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(vertical = 8.dp),
+                        ) {
+                            Text("Verify SHA-256", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        } else {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Memory,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Text(
+                        text = "No GGUF Model Loaded",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Import any quantized GGUF model (.gguf) to run completely offline on your device without any external API or internet access.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        // Additional imported models list
+        if (state.localModels.size > 1) {
+            Text(
+                text = "Other Imported Models (${state.localModels.size})",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            state.localModels.filter { it.id != active?.id }.forEach { model ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(model.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${model.quantization} · ${model.formattedSize}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { onLoadLocalModel(model) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                            Text("Switch", fontSize = 11.sp)
+                        }
+                        IconButton(onClick = { onDeleteLocalModel(model.id) }) {
+                            Icon(
+                                Icons.Default.DeleteSweep,
+                                contentDescription = "Delete model",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelSpecChip(label: String, value: String) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+            Text(label, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun WebChatCompanionSettingsSection(
+    state: AppUiState,
+    onOpenCompanion: () -> Unit,
+    onSetProvider: (WebChatProvider) -> Unit,
+    onSetCustomUrl: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Web Chat Companion",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "Manual login via official web chat · No API key needed",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(
+                onClick = onOpenCompanion,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Open", fontSize = 12.sp)
+            }
+        }
+
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Active Web Provider",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    WebChatProvider.entries.forEach { provider ->
+                        FilterChip(
+                            selected = state.webCompanionProvider == provider,
+                            onClick = { onSetProvider(provider) },
+                            label = { Text(provider.displayName, fontSize = 12.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            ),
+                            modifier = Modifier.height(32.dp),
+                        )
+                    }
+                }
+
+                Text(
+                    text = state.webCompanionProvider.description,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (state.webCompanionProvider == WebChatProvider.CUSTOM) {
+                    OutlinedTextField(
+                        value = state.webCompanionCustomUrl,
+                        onValueChange = onSetCustomUrl,
+                        placeholder = { Text("https://your-web-ai.example.com") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                    )
+                }
+
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.Security,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "100% Policy Compliant: No bot bypass, no cookie/token theft, no stealth scraping. You login in the browser and choose what to copy.",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 14.sp,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -69,6 +69,15 @@ class AppPreferences(private val context: Context) {
             preferences.edit().putString("selected_dev_stacks", arr.toString()).apply()
         }
 
+    var aiMode: com.pocketforge.mobile.model.AiMode
+        get() = runCatching {
+            val raw = preferences.getString("ai_mode", null)
+            com.pocketforge.mobile.model.AiMode.fromString(raw)
+        }.getOrDefault(com.pocketforge.mobile.model.AiMode.DEFAULT)
+        set(value) {
+            preferences.edit().putString("ai_mode", value.name).apply()
+        }
+
 
     fun saveProvider(profile: ProviderProfile) {
         preferences.edit()
@@ -230,6 +239,8 @@ class AppPreferences(private val context: Context) {
                     }
                 })
                 put("workedMillis", m.workedMillis)
+                if (m.routingBadge != null) put("routingBadge", m.routingBadge)
+                if (m.routingReason != null) put("routingReason", m.routingReason)
                 put("workItems", JSONArray().apply {
                     m.workItems.forEach { item ->
                         put(JSONObject().apply {
@@ -284,6 +295,8 @@ class AppPreferences(private val context: Context) {
                         }
                     }.orEmpty(),
                     workedMillis = obj.optLong("workedMillis", 0L),
+                    routingBadge = obj.optString("routingBadge").takeIf { it.isNotBlank() },
+                    routingReason = obj.optString("routingReason").takeIf { it.isNotBlank() },
                     workItems = obj.optJSONArray("workItems")?.let { workItems ->
                         (0 until workItems.length()).mapNotNull { index ->
                             runCatching {

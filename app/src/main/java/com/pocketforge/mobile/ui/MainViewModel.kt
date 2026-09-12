@@ -154,12 +154,33 @@ data class AppUiState(
     val appUpdateDownloadedBytes: Long = 0L,
     val appUpdateTotalBytes: Long = -1L,
     val appUpdateError: String? = null,
+    val aiMode: com.pocketforge.mobile.model.AiMode = com.pocketforge.mobile.model.AiMode.DEFAULT,
+    val activeRoutingDecision: com.pocketforge.mobile.runtime.RoutingDecision? = null,
+    val localModels: List<com.pocketforge.mobile.localmodel.LocalModelMetadata> = emptyList(),
+    val activeLocalModel: com.pocketforge.mobile.localmodel.LocalModelMetadata? = null,
+    val isLocalModelLoaded: Boolean = false,
+    val isLocalModelGenerating: Boolean = false,
+    val localModelImportProgress: Float? = null,
+    val localModelImportStatus: String? = null,
+    val localModelResourceReport: com.pocketforge.mobile.localmodel.util.DeviceResourceReport? = null,
+    val galleryDownloadStates: Map<String, com.pocketforge.mobile.localmodel.gallery.DownloadState> = emptyMap(),
+    val customGalleryModels: List<com.pocketforge.mobile.localmodel.gallery.GalleryModelItem> = emptyList(),
+    val webCompanionOpen: Boolean = false,
+    val webCompanionProvider: com.pocketforge.mobile.webchat.WebChatProvider = com.pocketforge.mobile.webchat.WebChatProvider.CLAUDE,
+    val webCompanionCustomUrl: String = "",
+    val webCompanionPreparedPrompt: String = "",
+    val webCompanionPromptMode: com.pocketforge.mobile.webchat.PromptContextMode = com.pocketforge.mobile.webchat.PromptContextMode.SMART_CONTEXT,
+    val webCompanionResponseText: String = "",
+    val webCompanionDetectedFiles: List<com.pocketforge.mobile.webchat.DetectedFileChange> = emptyList(),
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vault = ApiKeyVault(application)
     private val preferences = AppPreferences(application)
-    private val runtime = ClaudeRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
+    private val claudeBridge = ClaudeRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
+    val localModelEngine = com.pocketforge.mobile.localmodel.engine.LocalModelEngine.getInstance(application)
+    private val orchestrator = com.pocketforge.mobile.runtime.AgentOrchestrator(claudeBridge, preferences.aiMode, localModelEngine, application)
+    private val runtime: com.pocketforge.mobile.runtime.AgentOrchestrator get() = orchestrator
     private val installer = RuntimeInstaller(application)
     private val providerApi = ProviderApiClient()
     private fun appUpdater(): AppUpdater = AppUpdater(
@@ -176,6 +197,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onboardingComplete = preferences.onboardingComplete,
             backgroundSetupComplete = preferences.backgroundSetupComplete,
             provider = preferences.loadProvider(vault),
+            aiMode = preferences.aiMode,
             themeMode = runCatching { com.pocketforge.mobile.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.pocketforge.mobile.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
@@ -756,11 +778,119 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(themeMode = mode) }
     }
 
+    fun setAiMode(mode: com.pocketforge.mobile.model.AiMode) {
+        if (!mode.isAvailable) return
+        preferences.aiMode = mode
+        orchestrator.setMode(mode)
+        _state.update { it.copy(aiMode = mode) }
+    }
+
     fun getSavedApiKey(kind: ProviderKind): String = vault.get(kind.name).orEmpty()
+
+    fun importLocalModel(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _state.update { it.copy(localModelImportProgress = 0f, localModelImportStatus = "Starting import...") }
+            val res = localModelEngine.importModel(uri) { fraction, status ->
+                _state.update { it.copy(localModelImportProgress = fraction, localModelImportStatus = status) }
+            }
+            if (res.isFailure) {
+                val error = res.exceptionOrNull()?.message ?: "Failed to import model"
+                _state.update { it.copy(localModelImportProgress = null, localModelImportStatus = "Error: $error") }
+            } else {
+                _state.update { it.copy(localModelImportProgress = null, localModelImportStatus = null) }
+            }
+        }
+    }
+
+    fun loadLocalModel(metadata: com.pocketforge.mobile.localmodel.LocalModelMetadata) {
+        viewModelScope.launch {
+            val res = localModelEngine.loadModel(metadata)
+            if (res.isFailure) {
+                val error = res.exceptionOrNull()?.message ?: "Could not load model"
+                _state.update { it.copy(localModelImportStatus = "Error: $error") }
+            } else {
+                _state.update { it.copy(localModelImportStatus = null) }
+            }
+        }
+    }
+
+    fun unloadLocalModel() {
+        viewModelScope.launch {
+            localModelEngine.unloadModel()
+        }
+    }
+
+    fun deleteLocalModel(id: String) {
+        localModelEngine.deleteModel(id)
+    }
+
+    fun verifyLocalModelSha256(id: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(localModelImportStatus = "Verifying SHA-256...") }
+            val valid = localModelEngine.verifyModelSha256(id) { progress ->
+                _state.update { it.copy(localModelImportProgress = progress, localModelImportStatus = "Verifying SHA-256: ${(progress * 100).toInt()}%") }
+            }
+            val msg = if (valid) "SHA-256 verified successfully!" else "SHA-256 verification failed!"
+            _state.update { it.copy(localModelImportProgress = null, localModelImportStatus = msg) }
+        }
+    }
+
+    fun cancelLocalModelGeneration() {
+        localModelEngine.cancelGeneration()
+    }
+
+    fun startGalleryModelDownload(item: com.pocketforge.mobile.localmodel.gallery.GalleryModelItem) {
+        localModelEngine.downloadManager.startDownload(item)
+    }
+
+    fun pauseGalleryModelDownload(modelId: String) {
+        localModelEngine.downloadManager.pauseDownload(modelId)
+    }
+
+    fun cancelGalleryModelDownload(modelId: String, fileName: String) {
+        localModelEngine.downloadManager.cancelDownload(modelId, fileName)
+    }
+
+    fun addCustomGalleryModel(inputUrlOrPath: String): Result<com.pocketforge.mobile.localmodel.gallery.GalleryModelItem> {
+        val result = com.pocketforge.mobile.localmodel.gallery.HuggingFaceCatalog.createCustomModel(inputUrlOrPath)
+        result.onSuccess { item ->
+            _state.update { current ->
+                val updated = current.customGalleryModels.filter { it.id != item.id } + item
+                current.copy(customGalleryModels = updated)
+            }
+        }
+        return result
+    }
 
     init {
         viewModelScope.launch { RuntimeSetupController.snapshot.collect(::onSetupSnapshot) }
         viewModelScope.launch { runtime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch {
+            localModelEngine.store.models.collect { models ->
+                _state.update { it.copy(localModels = models) }
+            }
+        }
+        viewModelScope.launch {
+            localModelEngine.downloadManager.downloadStates.collect { states ->
+                _state.update { it.copy(galleryDownloadStates = states) }
+            }
+        }
+        viewModelScope.launch {
+            localModelEngine.activeModel.collect { model ->
+                val report = localModelEngine.checkResources(model)
+                _state.update { it.copy(activeLocalModel = model, localModelResourceReport = report) }
+            }
+        }
+        viewModelScope.launch {
+            localModelEngine.isLoaded.collect { loaded ->
+                _state.update { it.copy(isLocalModelLoaded = loaded) }
+            }
+        }
+        viewModelScope.launch {
+            localModelEngine.isGenerating.collect { generating ->
+                _state.update { it.copy(isLocalModelGenerating = generating) }
+            }
+        }
         viewModelScope.launch { bootstrap() }
     }
 
@@ -1692,6 +1822,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if ((prompt.isBlank() && attachments.isEmpty()) || state.value.isRunning) return
         val requestText = prompt.trim().ifBlank { "Please review the attached files." }
         updateActiveChatTitle(requestText)
+
+        val routingDecision = com.pocketforge.mobile.runtime.AutoAiRouter.evaluate(
+            prompt = requestText,
+            context = getApplication(),
+            localEngine = localModelEngine,
+            provider = state.value.provider,
+            userSelectedMode = state.value.aiMode,
+        )
+
+        if (state.value.aiMode == com.pocketforge.mobile.model.AiMode.WEB_CHAT) {
+            val userMsg = ChatMessage(fromUser = true, text = prompt.trim(), attachments = attachments)
+            _state.update {
+                it.copy(
+                    messages = it.messages + userMsg,
+                    pendingAttachments = emptyList(),
+                    currentTaskRequest = requestText,
+                    activeRoutingDecision = routingDecision,
+                )
+            }
+            touchProject(project.id)
+            persistMessages()
+            openWebCompanion(customPrompt = requestText)
+            return
+        }
+
         _state.update {
             val startedAt = System.currentTimeMillis()
             it.copy(
@@ -1706,6 +1861,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 taskFinishedAtMillis = null,
                 workSegmentStartedAtMillis = startedAt,
                 currentTaskRequest = requestText,
+                activeRoutingDecision = routingDecision,
             )
         }
         touchProject(project.id)
@@ -1726,14 +1882,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun answerApproval(approved: Boolean) {
+    fun answerApproval(approved: Boolean, rememberForSession: Boolean = false) {
         val request = state.value.pendingApproval ?: return
-        viewModelScope.launch { runtime.respondToApproval(request, approved) }
+        viewModelScope.launch { runtime.respondToApproval(request, approved, rememberForSession) }
     }
 
     fun stopTask() {
         if (!_state.value.isRunning) return
         viewModelScope.launch { runtime.stopActiveSession() }
+    }
+
+    fun retryLastPrompt() {
+        if (_state.value.isRunning) return
+        val lastUserMessage = _state.value.messages.lastOrNull { it.fromUser } ?: return
+        sendPrompt(lastUserMessage.text)
     }
 
     fun undoLastChanges() {
@@ -1838,11 +2000,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return current.copy(liveProcess = emptyList(), workSegmentStartedAtMillis = null)
         }
         val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: finishedAt
+        val badge = current.activeRoutingDecision?.modelLabel
+        val reason = current.activeRoutingDecision?.reason
         val block = ChatMessage(
             fromUser = false,
             text = "",
             workItems = meaningfulItems,
             workedMillis = (finishedAt - startedAt).coerceAtLeast(0L),
+            routingBadge = badge,
+            routingReason = reason,
         )
         return current.copy(
             messages = current.messages + block,
@@ -1879,11 +2045,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         current
                     }
+                    val badge = current.activeRoutingDecision?.modelLabel
+                    val reason = current.activeRoutingDecision?.reason
                     val lastMessage = timeline.messages.lastOrNull()
                     if (lastMessage != null && !lastMessage.fromUser && lastMessage.workItems.isEmpty() && lastMessage.workedMillis == 0L) {
-                        timeline.copy(messages = timeline.messages.dropLast(1) + lastMessage.copy(text = lastMessage.text + event.text))
+                        val updated = lastMessage.copy(
+                            text = lastMessage.text + event.text,
+                            routingBadge = lastMessage.routingBadge ?: badge,
+                            routingReason = lastMessage.routingReason ?: reason,
+                        )
+                        timeline.copy(messages = timeline.messages.dropLast(1) + updated)
                     } else {
-                        timeline.copy(messages = timeline.messages + ChatMessage(fromUser = false, text = event.text))
+                        timeline.copy(
+                            messages = timeline.messages + ChatMessage(
+                                fromUser = false,
+                                text = event.text,
+                                routingBadge = badge,
+                                routingReason = reason,
+                            )
+                        )
                     }
                 }
                 is RuntimeEvent.ReasoningProgress -> {
@@ -2047,6 +2227,158 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (event is RuntimeEvent.AssistantDelta || event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
             persistMessages()
+        }
+    }
+
+    fun openWebCompanion(customPrompt: String? = null, mode: com.pocketforge.mobile.webchat.PromptContextMode? = null) {
+        val current = _state.value
+        val promptMode = mode ?: current.webCompanionPromptMode
+        val basePrompt = customPrompt
+            ?: current.currentTaskRequest
+            ?: current.messages.lastOrNull { it.fromUser }?.text.orEmpty()
+        val prepared = com.pocketforge.mobile.webchat.WebChatPromptBuilder.buildPrompt(
+            userQuery = basePrompt,
+            mode = promptMode,
+            project = current.activeProject,
+            workspaceFiles = current.workspaceFiles,
+            activeFilePath = current.openedFilePath,
+            activeFileContent = current.openedFileContent,
+            terminalErrors = current.projectTerminalLiveOutput.takeIf { it.isNotBlank() }
+                ?: current.projectTerminalLines.takeLast(10).joinToString("\n") { it.output },
+        )
+        _state.update {
+            it.copy(
+                webCompanionOpen = true,
+                webCompanionPromptMode = promptMode,
+                webCompanionPreparedPrompt = prepared.prompt,
+            )
+        }
+    }
+
+    fun closeWebCompanion() {
+        _state.update { it.copy(webCompanionOpen = false) }
+    }
+
+    fun setWebCompanionProvider(provider: com.pocketforge.mobile.webchat.WebChatProvider) {
+        _state.update { it.copy(webCompanionProvider = provider) }
+    }
+
+    fun setWebCompanionCustomUrl(url: String) {
+        _state.update { it.copy(webCompanionCustomUrl = url) }
+    }
+
+    fun setWebCompanionPromptMode(mode: com.pocketforge.mobile.webchat.PromptContextMode) {
+        val current = _state.value
+        val basePrompt = current.currentTaskRequest
+            ?: current.messages.lastOrNull { it.fromUser }?.text.orEmpty()
+        val prepared = com.pocketforge.mobile.webchat.WebChatPromptBuilder.buildPrompt(
+            userQuery = basePrompt,
+            mode = mode,
+            project = current.activeProject,
+            workspaceFiles = current.workspaceFiles,
+            activeFilePath = current.openedFilePath,
+            activeFileContent = current.openedFileContent,
+            terminalErrors = current.projectTerminalLiveOutput.takeIf { it.isNotBlank() }
+                ?: current.projectTerminalLines.takeLast(10).joinToString("\n") { it.output },
+        )
+        _state.update {
+            it.copy(
+                webCompanionPromptMode = mode,
+                webCompanionPreparedPrompt = prepared.prompt,
+            )
+        }
+    }
+
+    fun updateWebCompanionResponseText(text: String) {
+        val parsed = com.pocketforge.mobile.webchat.WebChatResponseParser.parse(text)
+        _state.update {
+            it.copy(
+                webCompanionResponseText = text,
+                webCompanionDetectedFiles = parsed.detectedFiles,
+            )
+        }
+    }
+
+    fun toggleWebCompanionFileSelection(relativePath: String) {
+        _state.update { state ->
+            val updated = state.webCompanionDetectedFiles.map { file ->
+                if (file.relativePath == relativePath) file.copy(selected = !file.selected) else file
+            }
+            state.copy(webCompanionDetectedFiles = updated)
+        }
+    }
+
+    fun applyWebCompanionChanges(selectedFilesOnly: Boolean = true, addChatRecord: Boolean = true) {
+        val project = _state.value.activeProject ?: return
+        val filesToApply = if (selectedFilesOnly) {
+            _state.value.webCompanionDetectedFiles.filter { it.selected }
+        } else {
+            _state.value.webCompanionDetectedFiles
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val root = projectWorkspaceRoot(project)
+            val newChanges = mutableListOf<ChangeItem>()
+            var appliedCount = 0
+
+            filesToApply.forEach { change ->
+                val targetFile = File(root, change.relativePath)
+                if (targetFile.canonicalPath.startsWith(root.canonicalPath)) {
+                    targetFile.parentFile?.mkdirs()
+                    targetFile.writeText(change.content)
+                    appliedCount++
+                    val lines = change.content.lines()
+                    newChanges.add(
+                        ChangeItem(
+                            path = change.relativePath,
+                            additions = lines.size,
+                            deletions = 0,
+                            diffLines = lines.take(50).map {
+                                com.pocketforge.mobile.model.DiffLine(
+                                    com.pocketforge.mobile.model.DiffLineType.ADDITION,
+                                    it
+                                )
+                            },
+                        )
+                    )
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                if (addChatRecord && _state.value.webCompanionResponseText.isNotBlank()) {
+                    val parsed = com.pocketforge.mobile.webchat.WebChatResponseParser.parse(_state.value.webCompanionResponseText)
+                    val assistantMsg = if (appliedCount > 0) {
+                        "${parsed.explanationText}\n\n*✓ Applied changes to $appliedCount file(s) from Web Companion.*"
+                    } else {
+                        parsed.rawText
+                    }
+                    _state.update {
+                        it.copy(
+                            messages = it.messages + ChatMessage(fromUser = false, text = assistantMsg),
+                            changes = newChanges + it.changes,
+                            isRunning = false,
+                            webCompanionOpen = false,
+                            webCompanionResponseText = "",
+                            webCompanionDetectedFiles = emptyList(),
+                            toastMessage = if (appliedCount > 0) "Applied $appliedCount file(s) to workspace" else "Added response to chat",
+                        )
+                    }
+                    persistMessages()
+                    touchProject(project.id)
+                } else {
+                    _state.update {
+                        it.copy(
+                            changes = newChanges + it.changes,
+                            isRunning = false,
+                            webCompanionOpen = false,
+                            webCompanionResponseText = "",
+                            webCompanionDetectedFiles = emptyList(),
+                            toastMessage = "Applied $appliedCount file(s) to workspace",
+                        )
+                    }
+                }
+                refreshProjectFiles()
+            }
         }
     }
 
