@@ -109,8 +109,11 @@ class ClaudeRuntimeBridge(
         streamedThinking.clear()
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
         pushForegroundProgress("Starting Claude Code…")
-        val secret = secretFor(provider).orEmpty()
-        if (provider.kind != ProviderKind.CLAUDE && secret.isBlank()) {
+        val isLocalGateway = provider.baseUrl.contains("127.0.0.1") ||
+            provider.baseUrl.contains("localhost") ||
+            (provider.kind == ProviderKind.CUSTOM && (provider.baseUrl.startsWith("http://127.0.0.1") || provider.baseUrl.startsWith("http://localhost")))
+        val secret = if (isLocalGateway) "local-token" else secretFor(provider).orEmpty()
+        if (provider.kind != ProviderKind.CLAUDE && !isLocalGateway && secret.isBlank()) {
             eventBus.emit(RuntimeEvent.SessionFailed(sessionId, "No API key is saved for ${provider.kind.title}."))
             return@withContext sessionId
         }

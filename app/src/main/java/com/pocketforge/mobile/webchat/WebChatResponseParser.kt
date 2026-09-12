@@ -29,7 +29,12 @@ object WebChatResponseParser {
     )
 
     private val CODE_BLOCK_PATTERN_3 = Regex(
-        """```([a-zA-Z0-9_\-]+)?\s*\n(?:(?://|#|/\*)\s*(?:[fF]ile:?\s*)?([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)(?:\s*\*/)?)\s*\n([\s\S]*?)```""",
+        """```([a-zA-Z0-9_\-]+)?\s*\n(?:(?://|#|/\*|<!--)\s*(?:[fF]ile(?:name)?:?\s*)?([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)(?:\s*(?:\*/|-->))?)\s*\n([\s\S]*?)```""",
+        RegexOption.MULTILINE
+    )
+
+    private val CODE_BLOCK_PATTERN_4 = Regex(
+        """(?:###|\*\*|##)\s*[`\*]*([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]+)[`\*]*\s*(?:\*\*)?\s*\n\s*```([a-zA-Z0-9_\-]+)?\s*\n([\s\S]*?)```""",
         RegexOption.MULTILINE
     )
 
@@ -89,6 +94,24 @@ object WebChatResponseParser {
         for (match in CODE_BLOCK_PATTERN_3.findAll(trimmed)) {
             val lang = match.groupValues[1].trim()
             val rawPath = match.groupValues[2].trim()
+            val code = match.groupValues[3]
+            val cleanPath = sanitizePath(rawPath)
+            if (isValidFilePath(cleanPath) && seenPaths.add(cleanPath)) {
+                detected.add(
+                    DetectedFileChange(
+                        relativePath = cleanPath,
+                        content = code,
+                        language = lang.ifBlank { detectLanguage(cleanPath) },
+                        lineCount = code.lines().size,
+                    )
+                )
+            }
+        }
+
+        // Pattern 4: ### file.ext\n```lang\n...```
+        for (match in CODE_BLOCK_PATTERN_4.findAll(trimmed)) {
+            val rawPath = match.groupValues[1].trim()
+            val lang = match.groupValues[2].trim()
             val code = match.groupValues[3]
             val cleanPath = sanitizePath(rawPath)
             if (isValidFilePath(cleanPath) && seenPaths.add(cleanPath)) {

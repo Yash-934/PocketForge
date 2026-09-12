@@ -7,14 +7,18 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.net.http.SslError
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -25,14 +29,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -42,22 +47,28 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.DesktopMac
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.OpenInBrowser
-import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -77,7 +88,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -97,20 +107,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.pocketforge.mobile.ui.theme.PocketOrange
 import com.pocketforge.mobile.webchat.DetectedFileChange
 import com.pocketforge.mobile.webchat.PromptContextMode
+import com.pocketforge.mobile.webchat.WebChatAutomationEngine
 import com.pocketforge.mobile.webchat.WebChatPromptBuilder
 import com.pocketforge.mobile.webchat.WebChatProvider
+import com.pocketforge.mobile.webchat.WebChatResponseParser
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 private enum class CompanionTab(val title: String) {
     BROWSER("Web Chat"),
     PROMPT("Prepared Prompt"),
     IMPORT("Import Response"),
 }
-
-private const val MODERN_MOBILE_USER_AGENT =
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.88 Mobile Safari/537.36"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -134,13 +145,21 @@ fun WebChatCompanionSheet(
     var pageProgress by rememberSaveable { mutableIntStateOf(0) }
     var canGoBack by rememberSaveable { mutableStateOf(false) }
     var canGoForward by rememberSaveable { mutableStateOf(false) }
+    var isDesktopMode by rememberSaveable { mutableStateOf(false) }
+    var autoSending by remember { mutableStateOf(false) }
+    var autoExtracting by remember { mutableStateOf(false) }
+    var autoActionStatus by remember { mutableStateOf<String?>(null) }
     var copiedRecently by rememberSaveable { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onClose,
         sheetState = sheetState,
         dragHandle = null,
-        modifier = Modifier.fillMaxSize().imePadding(),
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .imePadding(),
     ) {
         Column(
             modifier = Modifier
@@ -189,8 +208,9 @@ fun WebChatCompanionSheet(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "Manual Login Safe • No API key • Zero credential extraction • Copy/paste workflow",
+                        text = "100% Free • No API Key Needed • One-Tap Auto Code Injection & Extract",
                         fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -242,7 +262,27 @@ fun WebChatCompanionSheet(
                         pageProgress = pageProgress,
                         canGoBack = canGoBack,
                         canGoForward = canGoForward,
-                        copiedRecently = copiedRecently,
+                        isDesktopMode = isDesktopMode,
+                        autoSending = autoSending,
+                        autoExtracting = autoExtracting,
+                        autoActionStatus = autoActionStatus,
+                        detectedFilesCount = state.webCompanionDetectedFiles.size,
+                        onToggleDesktopMode = {
+                            isDesktopMode = !isDesktopMode
+                            webViewInstance?.let { wv ->
+                                WebChatAutomationEngine.configureWebView(wv, isDesktopMode)
+                                wv.reload()
+                            }
+                        },
+                        onClearWebData = {
+                            webViewInstance?.let { wv ->
+                                wv.clearCache(true)
+                                wv.clearHistory()
+                                CookieManager.getInstance().removeAllCookies(null)
+                                wv.reload()
+                                Toast.makeText(context, "Web cache and cookies cleared", Toast.LENGTH_SHORT).show()
+                            }
+                        },
                         onWebViewReady = { webViewInstance = it },
                         onPageProgressChange = { loading, progress ->
                             pageLoading = loading
@@ -253,13 +293,80 @@ fun WebChatCompanionSheet(
                             canGoForward = forward
                             pageTitle = title
                         },
+                        onAutoSendPrompt = {
+                            val wv = webViewInstance
+                            if (wv == null) {
+                                Toast.makeText(context, "Web page is initializing…", Toast.LENGTH_SHORT).show()
+                                return@BrowserTabContent
+                            }
+                            autoSending = true
+                            autoActionStatus = "⚡ Auto-injecting prompt & sending…"
+                            val script = WebChatAutomationEngine.buildAutoInjectAndSendScript(state.webCompanionPreparedPrompt)
+                            wv.evaluateJavascript(script) { resultJson ->
+                                autoSending = false
+                                runCatching {
+                                    val cleaned = if (resultJson.startsWith("\"") && resultJson.endsWith("\"")) {
+                                        JSONObject("{ \"wrapped\": $resultJson }").getString("wrapped")
+                                    } else resultJson
+                                    val obj = JSONObject(cleaned)
+                                    if (obj.optBoolean("success", false)) {
+                                        autoActionStatus = "✓ Prompt sent! AI is generating code…"
+                                        Toast.makeText(context, "✓ Prompt sent to ${state.webCompanionProvider.displayName}!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val reason = obj.optString("reason", "Could not locate chat input on page.")
+                                        autoActionStatus = "Notice: $reason"
+                                        Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
+                                    }
+                                }.onFailure {
+                                    autoActionStatus = "Injected prompt into page."
+                                    Toast.makeText(context, "Injected prompt into web chat!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        onAutoExtractCode = {
+                            val wv = webViewInstance
+                            if (wv == null) {
+                                Toast.makeText(context, "Web page is not ready yet", Toast.LENGTH_SHORT).show()
+                                return@BrowserTabContent
+                            }
+                            autoExtracting = true
+                            autoActionStatus = "📥 Extracting AI code response from web page…"
+                            val script = WebChatAutomationEngine.buildExtractResponseScript()
+                            wv.evaluateJavascript(script) { resultJson ->
+                                autoExtracting = false
+                                runCatching {
+                                    val cleaned = if (resultJson.startsWith("\"") && resultJson.endsWith("\"")) {
+                                        JSONObject("{ \"wrapped\": $resultJson }").getString("wrapped")
+                                    } else resultJson
+                                    val obj = JSONObject(cleaned)
+                                    val fullText = obj.optString("fullText", "")
+                                    if (fullText.isNotBlank()) {
+                                        onUpdateResponseText(fullText)
+                                        val parsed = WebChatResponseParser.parse(fullText)
+                                        if (parsed.detectedFiles.isNotEmpty()) {
+                                            autoActionStatus = "✓ Extracted ${parsed.detectedFiles.size} file change(s)!"
+                                            Toast.makeText(context, "✓ Extracted ${parsed.detectedFiles.size} file(s)! Reviewing Import tab…", Toast.LENGTH_SHORT).show()
+                                            selectedTab = CompanionTab.IMPORT
+                                        } else {
+                                            autoActionStatus = "Extracted reply (No files parsed). Open Import tab."
+                                            selectedTab = CompanionTab.IMPORT
+                                        }
+                                    } else {
+                                        autoActionStatus = "No text found on page yet."
+                                        Toast.makeText(context, "Could not extract response yet. Please wait for AI to finish typing.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }.onFailure { err ->
+                                    autoActionStatus = "Extraction error: ${err.message}"
+                                    Toast.makeText(context, "Extraction error: ${err.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
                         onCopyPrompt = {
                             copyToClipboard(context, state.webCompanionPreparedPrompt)
                             copiedRecently = true
                             Toast.makeText(context, "Prompt copied to clipboard!", Toast.LENGTH_SHORT).show()
                         },
                         onSwitchToImport = {
-                            // Check if clipboard contains text and offer to populate
                             val clipboardText = getClipboardText(context)
                             if (!clipboardText.isNullOrBlank() && state.webCompanionResponseText.isBlank()) {
                                 onUpdateResponseText(clipboardText)
@@ -322,7 +429,7 @@ private fun CompanionHeader(
         tonalElevation = 2.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -332,8 +439,8 @@ private fun CompanionHeader(
                     Icon(
                         imageVector = Icons.Default.Language,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(22.dp)
+                        tint = PocketOrange,
+                        modifier = Modifier.size(20.dp)
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
@@ -369,7 +476,7 @@ private fun CompanionHeader(
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
             // Provider Selector Chips
             Row(
@@ -417,10 +524,18 @@ private fun BrowserTabContent(
     pageProgress: Int,
     canGoBack: Boolean,
     canGoForward: Boolean,
-    copiedRecently: Boolean,
+    isDesktopMode: Boolean,
+    autoSending: Boolean,
+    autoExtracting: Boolean,
+    autoActionStatus: String?,
+    detectedFilesCount: Int,
+    onToggleDesktopMode: () -> Unit,
+    onClearWebData: () -> Unit,
     onWebViewReady: (WebView) -> Unit,
     onPageProgressChange: (Boolean, Int) -> Unit,
     onNavigationStateChange: (Boolean, Boolean, String) -> Unit,
+    onAutoSendPrompt: () -> Unit,
+    onAutoExtractCode: () -> Unit,
     onCopyPrompt: () -> Unit,
     onSwitchToImport: () -> Unit,
     onSwitchToPrompt: () -> Unit,
@@ -429,13 +544,13 @@ private fun BrowserTabContent(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Navigation mini-bar
+        // Navigation & Quick-Action mini-bar
         Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -443,35 +558,57 @@ private fun BrowserTabContent(
                     IconButton(
                         onClick = { webViewRef?.goBack() },
                         enabled = canGoBack,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(15.dp),
                             tint = if (canGoBack) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                         )
                     }
                     IconButton(
                         onClick = { webViewRef?.goForward() },
                         enabled = canGoForward,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Forward",
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(15.dp),
                             tint = if (canGoForward) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                         )
                     }
                     IconButton(
                         onClick = { webViewRef?.reload() },
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
                             contentDescription = "Reload",
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
+                        onClick = onToggleDesktopMode,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isDesktopMode) Icons.Default.DesktopMac else Icons.Default.PhoneAndroid,
+                            contentDescription = if (isDesktopMode) "Desktop View Active" else "Mobile View Active",
+                            modifier = Modifier.size(15.dp),
+                            tint = if (isDesktopMode) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
+                        onClick = onClearWebData,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CleaningServices,
+                            contentDescription = "Clear Cache & Reset",
+                            modifier = Modifier.size(15.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -479,7 +616,8 @@ private fun BrowserTabContent(
 
                 Text(
                     text = provider.domain,
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -487,11 +625,11 @@ private fun BrowserTabContent(
 
                 TextButton(
                     onClick = onSwitchToPrompt,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Prompt", fontSize = 11.sp)
+                    Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(13.dp), tint = PocketOrange)
+                    Spacer(Modifier.width(3.dp))
+                    Text("Context", fontSize = 11.sp)
                 }
             }
         }
@@ -500,30 +638,55 @@ private fun BrowserTabContent(
             LinearProgressIndicator(
                 progress = { pageProgress / 100f },
                 modifier = Modifier.fillMaxWidth().height(2.dp),
+                color = PocketOrange,
             )
         }
 
-        // Android WebView container
+        // Live automation status banner
+        if (!autoActionStatus.isNullOrBlank() || autoSending || autoExtracting) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (autoSending || autoExtracting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(13.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = PocketOrange,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    Text(
+                        text = autoActionStatus.orEmpty(),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+
+        // Android WebView container with full nested scroll support
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             AndroidView(
                 factory = { ctx ->
                     WebView(ctx).apply {
                         webViewRef = this
                         onWebViewReady(this)
-                        settings.apply {
-                            javaScriptEnabled = true
-                            domStorageEnabled = true
-                            databaseEnabled = true
-                            setSupportZoom(true)
-                            builtInZoomControls = true
-                            displayZoomControls = false
-                            loadWithOverviewMode = true
-                            useWideViewPort = true
-                            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                            userAgentString = MODERN_MOBILE_USER_AGENT
-                        }
-                        CookieManager.getInstance().setAcceptCookie(true)
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        WebChatAutomationEngine.configureWebView(this, isDesktopMode)
 
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -537,7 +700,7 @@ private fun BrowserTabContent(
 
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                onPageProgressChange(true, 10)
+                                onPageProgressChange(true, 15)
                                 onNavigationStateChange(canGoBack(), canGoForward(), view?.title.orEmpty())
                             }
 
@@ -546,9 +709,24 @@ private fun BrowserTabContent(
                                 onNavigationStateChange(canGoBack(), canGoForward(), view?.title.orEmpty())
                             }
 
+                            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                                super.onReceivedError(view, request, error)
+                            }
+
+                            override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                                handler?.proceed()
+                            }
+
                             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                // Keep web AI browsing inside webview for safe manual login
-                                return false
+                                val url = request?.url?.toString() ?: return false
+                                if (url.startsWith("http://") || url.startsWith("https://")) {
+                                    return false
+                                }
+                                runCatching {
+                                    val intent = Intent(Intent.ACTION_VIEW, request.url)
+                                    view?.context?.startActivity(intent)
+                                }
+                                return true
                             }
                         }
 
@@ -556,8 +734,7 @@ private fun BrowserTabContent(
                     }
                 },
                 update = { webView ->
-                    // If targetUrl changed externally
-                    if (webView.url != targetUrl && !targetUrl.isBlank()) {
+                    if (webView.url != targetUrl && targetUrl.isNotBlank()) {
                         webView.loadUrl(targetUrl)
                     }
                 },
@@ -565,53 +742,89 @@ private fun BrowserTabContent(
             )
         }
 
-        // Bottom Fast-Action Tray
+        // Bottom Fast-Action Automation Tray (One-Tap Automatic Coding)
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 4.dp,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = onCopyPrompt,
-                    modifier = Modifier.weight(1f).testTag("companion_quick_copy_button"),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (copiedRecently) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
-                    )
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                // Primary Automated Action Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = if (copiedRecently) Icons.Default.Check else Icons.Default.ContentCopy,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (copiedRecently) "Prompt Copied!" else "1. Copy Prompt",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Button(
+                        onClick = onAutoSendPrompt,
+                        enabled = !autoSending,
+                        modifier = Modifier.weight(1.1f).testTag("companion_auto_send_button"),
+                        colors = ButtonDefaults.buttonColors(containerColor = PocketOrange)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = if (autoSending) "Sending…" else "⚡ Auto-Send Prompt",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Button(
+                        onClick = onAutoExtractCode,
+                        enabled = !autoExtracting,
+                        modifier = Modifier.weight(1.2f).testTag("companion_auto_extract_button"),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = if (autoExtracting) "Extracting…" else "📥 Extract & Apply",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
-                OutlinedButton(
-                    onClick = onSwitchToImport,
-                    modifier = Modifier.weight(1f).testTag("companion_quick_import_button"),
+                Spacer(Modifier.height(4.dp))
+
+                // Secondary Manual Fallback Action Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.ContentPaste,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = "2. Import Reply",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    TextButton(
+                        onClick = onCopyPrompt,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copy Raw Prompt", fontSize = 11.sp)
+                    }
+
+                    TextButton(
+                        onClick = onSwitchToImport,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            if (detectedFilesCount > 0) "Review $detectedFilesCount Files →" else "Manual Import →",
+                            fontSize = 11.sp,
+                            fontWeight = if (detectedFilesCount > 0) FontWeight.Bold else FontWeight.Normal,
+                            color = if (detectedFilesCount > 0) PocketOrange else MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
         }
@@ -632,8 +845,8 @@ private fun PromptInspectorTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
             text = "Context & Formatting Mode",
@@ -680,11 +893,11 @@ private fun PromptInspectorTabContent(
 
             Button(
                 onClick = onCopyPrompt,
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Copy Prompt")
+                Text("Copy Prompt", fontSize = 12.sp)
             }
         }
 
@@ -712,11 +925,12 @@ private fun PromptInspectorTabContent(
         ) {
             Button(
                 onClick = onOpenWebTab,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = PocketOrange)
             ) {
-                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Open Web Chat & Paste")
+                Text("Open Web Chat & Auto-Send")
             }
         }
     }
@@ -734,8 +948,8 @@ private fun ImportResponseTabContent(
     val selectedCount = detectedFiles.count { it.selected }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
             Row(
@@ -744,7 +958,7 @@ private fun ImportResponseTabContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Paste AI Response",
+                    text = "AI Generated Response",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -755,9 +969,9 @@ private fun ImportResponseTabContent(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.testTag("paste_from_clipboard_button")
                 ) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Paste from Clipboard", fontSize = 12.sp)
+                    Text("Paste Clipboard", fontSize = 12.sp)
                 }
             }
         }
@@ -768,15 +982,15 @@ private fun ImportResponseTabContent(
                 onValueChange = onUpdateResponseText,
                 placeholder = {
                     Text(
-                        "Paste the response you copied from Claude, ChatGPT, DeepSeek, or Gemini.\n\nCode blocks formatted with file paths (e.g. ```typescript:src/App.tsx) will be auto-detected.",
+                        "Extracted response from Claude, DeepSeek, ChatGPT, or Gemini appears here automatically when you tap '📥 Extract & Apply'.",
                         fontSize = 12.sp,
                     )
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 120.dp, max = 220.dp)
+                    .heightIn(min = 100.dp, max = 200.dp)
                     .testTag("companion_response_input"),
-                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
                 shape = RoundedCornerShape(12.dp),
             )
         }
@@ -784,9 +998,9 @@ private fun ImportResponseTabContent(
         if (detectedFiles.isNotEmpty()) {
             item {
                 Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -796,13 +1010,13 @@ private fun ImportResponseTabContent(
                     ) {
                         Column {
                             Text(
-                                text = "Detected ${detectedFiles.size} File Changes",
+                                text = "✓ Detected ${detectedFiles.size} File Changes",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                text = "$selectedCount file(s) selected to apply to workspace",
+                                text = "$selectedCount of ${detectedFiles.size} file(s) selected to apply to project",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -836,7 +1050,7 @@ private fun ImportResponseTabContent(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "No explicit file patches detected. You can still insert this reply into your PocketForge chat.",
+                            text = "No explicit file headers detected. You can insert this reply into your PocketForge chat.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -846,13 +1060,14 @@ private fun ImportResponseTabContent(
         }
 
         item {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (detectedFiles.isNotEmpty()) {
                     Button(
                         onClick = { onApplyChanges(true, true) },
                         enabled = selectedCount > 0,
                         modifier = Modifier.fillMaxWidth().testTag("apply_and_chat_button"),
+                        colors = ButtonDefaults.buttonColors(containerColor = PocketOrange)
                     ) {
                         Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))

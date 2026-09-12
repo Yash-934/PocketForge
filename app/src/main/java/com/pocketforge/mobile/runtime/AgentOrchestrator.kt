@@ -120,7 +120,7 @@ class AgentOrchestrator(
                     val sessionId = java.util.UUID.randomUUID().toString()
                     activeLocalSessionId = sessionId
                     scope.launch {
-                        runDirectLocalSession(sessionId, prompt, engine)
+                        runDirectLocalSession(sessionId, projectId, prompt, engine)
                     }
                     sessionId
                 }
@@ -162,14 +162,44 @@ class AgentOrchestrator(
 
     private suspend fun runDirectLocalSession(
         sessionId: String,
+        projectId: String,
         prompt: String,
         engine: LocalModelEngine,
     ) {
         fallbackEvents.emit(RuntimeEvent.SessionStarted(sessionId))
+        val fullResponse = StringBuilder()
         try {
             engine.generateTokens(prompt).collect { token ->
+                fullResponse.append(token)
                 fallbackEvents.emit(RuntimeEvent.AssistantDelta(sessionId, token))
             }
+
+            // Automatically extract file changes from the local model's output and apply them to workspace
+            val parsed = com.pocketforge.mobile.webchat.WebChatResponseParser.parse(fullResponse.toString())
+            if (parsed.detectedFiles.isNotEmpty() && context != null) {
+                val workspaceDir = java.io.File(context.filesDir, "workspaces/$projectId").apply { mkdirs() }
+                val changes = mutableListOf<ChangeItem>()
+                for (change in parsed.detectedFiles) {
+                    val file = java.io.File(workspaceDir, change.relativePath)
+                    file.parentFile?.mkdirs()
+                    val oldText = if (file.isFile) file.readText() else ""
+                    file.writeText(change.content)
+
+                    val additions = change.content.lines().size
+                    val deletions = if (oldText.isNotBlank()) oldText.lines().size else 0
+                    changes.add(
+                        ChangeItem(
+                            path = change.relativePath,
+                            additions = additions,
+                            deletions = deletions,
+                            accepted = true,
+                        )
+                    )
+                }
+                fallbackEvents.emit(RuntimeEvent.FilesChanged(sessionId, changes))
+                fallbackEvents.emit(RuntimeEvent.ToolCompleted(sessionId, "FileCreated", "Created and updated ${parsed.detectedFiles.size} project file(s)"))
+            }
+
             fallbackEvents.emit(RuntimeEvent.SessionCompleted(sessionId))
         } catch (e: Exception) {
             fallbackEvents.emit(RuntimeEvent.SessionFailed(sessionId, e.message ?: "Local model generation failed"))
