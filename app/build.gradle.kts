@@ -25,6 +25,7 @@ fun buildConfigString(value: String): String =
 android {
     namespace = "com.pocketforge.mobile"
     compileSdk = 36
+    ndkVersion = providers.gradleProperty("mhNdkVersion").orNull ?: "26.1.10909125"
 
     signingConfigs {
         create("debugConfig") {
@@ -43,6 +44,8 @@ android {
         versionName = "1.1.0"
         providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()?.let { versionCode = it }
         providers.gradleProperty("appVersionName").orNull?.let { versionName = it }
+
+        ndk.abiFilters += "arm64-v8a"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -87,6 +90,12 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     packaging.jniLibs.useLegacyPackaging = true
