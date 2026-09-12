@@ -1,0 +1,31 @@
+Categories:
+  - Development
+  - System
+License: MIT
+AuthorName: TechJarves
+SourceCode: https://github.com/techjarves/Mobile-Harness
+IssueTracker: https://github.com/techjarves/Mobile-Harness/issues
+Changelog: https://github.com/techjarves/Mobile-Harness/releases
+
+AutoName: PocketForge
+
+RepoType: git
+Repo: https://github.com/techjarves/Mobile-Harness.git
+
+AntiFeatures:
+  - NonFreeNet
+
+Builds:
+  - versionName: 1.1.0
+    versionCode: 5
+    commit: v1.1.0
+    subdir: app
+    ndk: r26b
+    submodules: true
+    gradle:
+      - yes
+
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags
+CurrentVersion: 1.1.0
+CurrentVersionCode: 5
