@@ -17,7 +17,7 @@ data class RuntimeLaunchConfig(
 interface RuntimeBridge {
     val events: Flow<RuntimeEvent>
     suspend fun startSession(projectId: String, projectSlug: String, projectKind: ProjectKind, prompt: String, conversationHistory: List<ChatMessage>, provider: ProviderProfile): String
-    suspend fun respondToApproval(request: ToolRequest, approved: Boolean, rememberForSession: Boolean = false)
+    suspend fun respondToApproval(request: ToolRequest, approved: Boolean)
     suspend fun stopSession(sessionId: String)
     suspend fun stopActiveSession()
     suspend fun undoLastChanges(projectId: String): Boolean
@@ -25,10 +25,6 @@ interface RuntimeBridge {
     suspend fun loadPendingChanges(projectId: String): List<ChangeItem>
     suspend fun undoFileChange(projectId: String, path: String): Boolean
     suspend fun acceptFileChange(projectId: String, path: String): Boolean
-    fun configureProjectRoot(projectId: String, rootPath: String) {}
-    fun setWorkspaceTrust(projectId: String, trusted: Boolean) {}
-    fun isWorkspaceTrusted(projectId: String): Boolean = true
-    fun resetProjectSession(projectId: String) {}
 }
 
 object RuntimeLaunchConfigBuilder {

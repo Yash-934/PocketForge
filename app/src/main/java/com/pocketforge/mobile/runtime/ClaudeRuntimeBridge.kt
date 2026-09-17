@@ -67,15 +67,13 @@ class ClaudeRuntimeBridge(
     private val eventBus = MutableSharedFlow<RuntimeEvent>(extraBufferCapacity = 64)
     override val events: Flow<RuntimeEvent> = eventBus
     private val pending = ConcurrentHashMap<String, PendingPermission>()
-    private val workspaceTrustManager = WorkspaceTrustManager()
-    private val persistentProjectSessions = ConcurrentHashMap<String, String>()
+    private val sessionApprovedReviewTools = ConcurrentHashMap.newKeySet<String>()
     private val toolNames = ConcurrentHashMap<String, String>()
     private val seenToolCalls = ConcurrentHashMap.newKeySet<String>()
     private val finishedSessions = ConcurrentHashMap.newKeySet<String>()
     private val projectRoots = ConcurrentHashMap<String, String>()
     @Volatile private var activeProcess: Process? = null
     @Volatile private var activeSessionId: String? = null
-    @Volatile private var activeProjectId: String? = null
     @Volatile private var userStopRequested: Boolean = false
     @Volatile private var activeProjectSlug: String? = null
     @Volatile private var taskStartedAtElapsedRealtime: Long = 0L
@@ -92,7 +90,6 @@ class ClaudeRuntimeBridge(
         val sessionId = UUID.randomUUID().toString()
         finishedSessions.remove(sessionId)
         activeSessionId = sessionId
-        activeProjectId = projectId
         userStopRequested = false
         activeProjectSlug = projectSlug
         taskStartedAtElapsedRealtime = android.os.SystemClock.elapsedRealtime()
@@ -100,7 +97,7 @@ class ClaudeRuntimeBridge(
         foregroundResultPosted = false
         toolNames.clear()
         seenToolCalls.clear()
-        workspaceTrustManager.clearSession(sessionId)
+        sessionApprovedReviewTools.clear()
         pending.clear()
         lastReasoningTokens = 0
         lastReasoningUpdateAt = 0L
@@ -109,11 +106,8 @@ class ClaudeRuntimeBridge(
         streamedThinking.clear()
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
         pushForegroundProgress("Starting Claude Code…")
-        val isLocalGateway = provider.baseUrl.contains("127.0.0.1") ||
-            provider.baseUrl.contains("localhost") ||
-            (provider.kind == ProviderKind.CUSTOM && (provider.baseUrl.startsWith("http://127.0.0.1") || provider.baseUrl.startsWith("http://localhost")))
-        val secret = if (isLocalGateway) "local-token" else secretFor(provider).orEmpty()
-        if (provider.kind != ProviderKind.CLAUDE && !isLocalGateway && secret.isBlank()) {
+        val secret = secretFor(provider).orEmpty()
+        if (provider.kind != ProviderKind.CLAUDE && secret.isBlank()) {
             eventBus.emit(RuntimeEvent.SessionFailed(sessionId, "No API key is saved for ${provider.kind.title}."))
             return@withContext sessionId
         }
@@ -148,18 +142,13 @@ class ClaudeRuntimeBridge(
             if (BuildConfig.DEBUG) Log.d("ClaudeBridge", "Provider: ${provider.kind}, Model: ${provider.model}, BaseUrl: ${provider.baseUrl}")
             if (BuildConfig.DEBUG) Log.d("ClaudeBridge", "Launch environment keys: ${launch.environment.keys}")
 
-            // Maintain persistent project session across turns
-            val persistentSessionId = persistentProjectSessions.computeIfAbsent(projectId) { UUID.randomUUID().toString() }
-
-            // Build a context-aware prompt that includes conversation history and active changes
+            // Build a context-aware prompt that includes conversation history
             val guestWorkspacePath = "/workspace/$projectSlug"
-            val contextPrompt = buildContextPrompt(prompt, conversationHistory, guestWorkspacePath, projectKind, projectId)
+            val contextPrompt = buildContextPrompt(prompt, conversationHistory, guestWorkspacePath, projectKind)
 
             val command = buildList {
                 add(launch.executable)
                 add("--bare")
-                add("--session-id")
-                add(persistentSessionId)
                 add("-p")
                 add(contextPrompt)
                 add("--output-format")
@@ -277,29 +266,19 @@ class ClaudeRuntimeBridge(
         sessionId
     }
 
-    override suspend fun respondToApproval(
-        request: ToolRequest,
-        approved: Boolean,
-        rememberForSession: Boolean,
-    ) = withContext(Dispatchers.IO) {
+    override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) = withContext(Dispatchers.IO) {
         val permission = pending.remove(request.approvalId) ?: return@withContext
-        if (approved && rememberForSession && request.risk != RiskLevel.HIGH) {
-            val key = workspaceTrustManager.derivePermissionKey(request.toolName, request.commandPreview)
-            workspaceTrustManager.allowForSession(request.sessionId, key)
+        if (approved && request.risk == RiskLevel.REVIEW && request.toolName in REMEMBERABLE_REVIEW_TOOLS) {
+            // File edits stay inside the already-selected workspace. Once the user
+            // approves the first edit for this session, avoid approval spam for
+            // subsequent edits while keeping HIGH-risk shell/system actions gated.
+            sessionApprovedReviewTools += request.toolName
         }
         permission.response.writeText(if (approved) "allow" else "deny")
         eventBus.emit(
             if (approved) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
             else RuntimeEvent.ToolRejected(request.sessionId, request.approvalId),
         )
-    }
-
-    override fun setWorkspaceTrust(projectId: String, trusted: Boolean) {
-        workspaceTrustManager.setWorkspaceTrust(projectId, trusted)
-    }
-
-    override fun isWorkspaceTrusted(projectId: String): Boolean {
-        return workspaceTrustManager.isWorkspaceTrusted(projectId)
     }
 
     override suspend fun stopSession(sessionId: String) = withContext(Dispatchers.IO) {
@@ -391,44 +370,41 @@ class ClaudeRuntimeBridge(
             bridge.listFiles { file -> file.name.endsWith(".request") }.orEmpty().forEach { file ->
                 val approvalId = file.name.removeSuffix(".request")
                 if (pending.containsKey(approvalId)) return@forEach
-                val responseFile = File(file.parentFile, "$approvalId.response")
                 runCatching {
-                    val rawText = file.readText()
-                    val parsed = SmartPermissionClassifier.parsePermissionRequest(approvalId, rawText).getOrThrow()
-                    val evaluation = SmartPermissionClassifier.classify(
-                        toolName = parsed.toolName,
-                        command = parsed.command,
-                        affectedPaths = parsed.affectedPaths,
-                    )
-                    val permissionKey = workspaceTrustManager.derivePermissionKey(parsed.toolName, parsed.command)
-                    val autoAllowed = workspaceTrustManager.shouldAutoApprove(
-                        evaluation = evaluation,
-                        projectId = activeProjectId.orEmpty(),
-                        sessionId = sessionId,
-                        permissionKey = permissionKey,
-                    )
+                    val json = JSONObject(file.readText())
+                    val toolName = json.optString("tool_name", "Tool")
+                    val input = json.optJSONObject("tool_input") ?: JSONObject()
+                    val command = input.optString("command").ifBlank { null }
+                    val paths = listOf("file_path", "path", "notebook_path")
+                        .mapNotNull { key -> input.optString(key).takeIf(String::isNotBlank) }
+                    val explanation = input.optString("description")
+                        .ifBlank { command.orEmpty() }
+                        .ifBlank { "$toolName running in project" }
+                    val risk = classifyRisk(toolName, command)
+                    val response = File(file.parentFile, "$approvalId.response")
+                    val autoAllowed = risk == RiskLevel.SAFE ||
+                        (risk == RiskLevel.REVIEW && toolName in REMEMBERABLE_REVIEW_TOOLS && toolName in sessionApprovedReviewTools)
 
                     if (autoAllowed) {
-                        responseFile.writeText("allow")
-                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, parsed.toolName, parsed.explanation))
+                        response.writeText("allow")
+                        eventBus.emit(RuntimeEvent.ToolCompleted(sessionId, toolName, explanation))
                     } else {
                         val request = ToolRequest(
                             approvalId = approvalId,
                             sessionId = sessionId,
-                            toolName = parsed.toolName,
-                            explanation = parsed.explanation,
-                            affectedPaths = parsed.affectedPaths,
-                            commandPreview = parsed.command,
-                            risk = evaluation.risk,
-                            canRememberForSession = evaluation.canRememberForSession,
+                            toolName = toolName,
+                            explanation = explanation,
+                            affectedPaths = paths,
+                            commandPreview = command,
+                            risk = risk,
                         )
-                        pending[approvalId] = PendingPermission(request, responseFile)
+                        pending[approvalId] = PendingPermission(request, response)
                         eventBus.emit(RuntimeEvent.ToolRequested(sessionId, request))
                     }
                 }.onFailure { error ->
                     Log.e("ClaudeBridge", "Invalid permission request $approvalId; denying", error)
                     runCatching {
-                        responseFile.writeText("deny")
+                        File(file.parentFile, "$approvalId.response").writeText("deny")
                     }
                 }
             }
@@ -648,25 +624,59 @@ class ClaudeRuntimeBridge(
             .take(600)
     }
 
-    override fun resetProjectSession(projectId: String) {
-        persistentProjectSessions.remove(projectId)
-    }
+    private fun buildContextPrompt(currentPrompt: String, history: List<ChatMessage>, guestWorkspacePath: String, projectKind: ProjectKind): String {
+        // Filter out the current prompt (last user message), system greeting, and any error messages
+        val priorMessages = history
+            .filter { msg ->
+                (msg.fromUser || !msg.text.startsWith("Hi! Tell me")) &&
+                !msg.text.startsWith("Failed to") &&
+                !msg.text.startsWith("Error:") &&
+                !msg.text.contains("API Error")
+            }
+            .dropLast(1) // Drop the current prompt which was just added
 
-    private fun buildContextPrompt(
-        currentPrompt: String,
-        history: List<ChatMessage>,
-        guestWorkspacePath: String,
-        projectKind: ProjectKind,
-        projectId: String,
-    ): String {
-        val recentChanges = readChangedPaths(projectId)
-        return AutonomousCodingWorkflow.buildOptimizedAgentPrompt(
-            currentPrompt = currentPrompt,
-            history = history,
-            guestWorkspacePath = guestWorkspacePath,
-            projectKind = projectKind,
-            recentModifiedFiles = recentChanges,
-        )
+        val sb = StringBuilder()
+        sb.appendLine("<project_workspace>")
+        if (projectKind == ProjectKind.QUICK_PROJECT) {
+            sb.appendLine("This is a lightweight project workspace at $guestWorkspacePath.")
+            sb.appendLine("Respond conversationally, and use terminal or file tools whenever they are useful for the request.")
+            sb.appendLine("Keep every file and command inside this project workspace.")
+        } else {
+            sb.appendLine("The current working directory $guestWorkspacePath is the project root.")
+            sb.appendLine("Create and edit project files directly in this directory. Do not create another outer project folder unless the user explicitly asks for one.")
+            sb.appendLine("When giving commands to the user, make them runnable from this project root.")
+        }
+        sb.appendLine("If this is an Android project, the phone already provides JDK 17, Android SDK 36, ARM64 Build Tools 35.0.0, Gradle 8.14.3, and an offline Maven repository.")
+        sb.appendLine("For newly created Android projects, use AGP 8.11.0, Kotlin 1.9.22, compileSdk 36, and Java 17 so the preinstalled offline toolchain can build immediately.")
+        sb.appendLine("The bundled Maven cache handles the base toolchain; Gradle may download project-specific libraries normally. Set android.useAndroidX=true for AndroidX or Compose projects.")
+        sb.appendLine("PocketForge globally configures Gradle to use the SDK's ARM64 aapt2. Do not use the x86_64 Maven aapt2, investigate its architecture, or add android.aapt2FromMavenOverride to the project.")
+        sb.appendLine("Use the installed `gradle` command for Android builds; do not ask the user to install Android Studio, an SDK, Gradle, ADB, or Termux.")
+        sb.appendLine("For local servers, give a clear start command and never use a kill command that searches its own command text with pgrep, because it can terminate the terminal itself.")
+        sb.appendLine("</project_workspace>")
+        sb.appendLine()
+        if (priorMessages.isEmpty()) {
+            sb.appendLine(currentPrompt)
+            return sb.toString()
+        }
+        sb.appendLine("<conversation_history>")
+        sb.appendLine("The following is our prior conversation in this project. Continue naturally from where we left off.")
+        sb.appendLine()
+        for (msg in priorMessages) {
+            val role = if (msg.fromUser) "User" else "Assistant"
+            sb.appendLine("$role: ${msg.text}")
+            if (msg.attachments.isNotEmpty()) {
+                sb.appendLine("Attached files:")
+                msg.attachments.forEach { attachment ->
+                    sb.appendLine("- ${attachment.displayName}: $guestWorkspacePath/${attachment.relativePath} (${attachment.mimeType})")
+                }
+            }
+            sb.appendLine()
+        }
+        sb.appendLine("</conversation_history>")
+        sb.appendLine()
+        sb.appendLine("Now, respond to this new message from the user:")
+        sb.appendLine(currentPrompt)
+        return sb.toString()
     }
 
     private fun ensureWorkspace(projectId: String): File {
@@ -678,7 +688,7 @@ class ClaudeRuntimeBridge(
         return selected.apply { mkdirs() }
     }
 
-    override fun configureProjectRoot(projectId: String, rootPath: String) {
+    fun configureProjectRoot(projectId: String, rootPath: String) {
         val normalized = rootPath.trim().trim('/')
         require(normalized.isBlank() || (!normalized.contains("..") && !normalized.startsWith('/'))) {
             "Unsafe project root"
@@ -900,6 +910,15 @@ class ClaudeRuntimeBridge(
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
+    private fun classifyRisk(tool: String, command: String?): RiskLevel {
+        val preview = "${tool.lowercase()} ${command.orEmpty().lowercase()}"
+        return when {
+            listOf("rm -rf", "git push", "git reset", "sudo", "curl ").any(preview::contains) -> RiskLevel.HIGH
+            tool in listOf("Write", "Edit", "NotebookEdit", "Bash") -> RiskLevel.REVIEW
+            else -> RiskLevel.SAFE
+        }
+    }
+
     private fun friendlyError(error: Throwable): String {
         val message = error.message.orEmpty()
         return when {
@@ -1005,6 +1024,7 @@ class ClaudeRuntimeBridge(
     private class ProviderSessionException(message: String) : IllegalStateException(message)
 
     companion object {
+        val REMEMBERABLE_REVIEW_TOOLS = setOf("Write", "Edit", "NotebookEdit")
         private const val MAX_DIFF_LINES = 2_000
         private const val MAX_RENDERED_DIFF_LINES = 600
         private const val DIFF_CONTEXT_LINES = 3

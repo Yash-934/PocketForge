@@ -20,7 +20,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.StartOffset
 import androidx.compose.animation.core.animateFloat
@@ -68,16 +67,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Description
@@ -86,11 +81,9 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Key
@@ -111,7 +104,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -123,7 +115,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -161,7 +152,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
@@ -215,7 +205,6 @@ import androidx.compose.material.icons.filled.Terminal
 
 private enum class RootScreen(val label: String, val icon: ImageVector) {
     PROJECTS("Projects", Icons.Default.Folder),
-    MODELS("Models", Icons.Default.Memory),
     TERMINAL("Terminal", Icons.Default.Terminal),
     SETTINGS("Settings", Icons.Default.Settings),
 }
@@ -318,24 +307,8 @@ fun PocketForgeApp(viewModel: MainViewModel = viewModel()) {
             onRemoveAttachment = viewModel::removePendingAttachment,
             onOpenAttachment = viewModel::openChatAttachment,
             onBuildAndRunAndroid = viewModel::buildAndRunAndroidApp,
-            onOpenWebCompanion = { viewModel.openWebCompanion() },
-            onRetryLastPrompt = viewModel::retryLastPrompt,
-            onSetAiMode = viewModel::setAiMode,
         )
         else -> RootScreenHost(state, viewModel, projectsListState)
-    }
-
-    if (state.webCompanionOpen) {
-        WebChatCompanionSheet(
-            state = state,
-            onClose = viewModel::closeWebCompanion,
-            onSetProvider = viewModel::setWebCompanionProvider,
-            onSetCustomUrl = viewModel::setWebCompanionCustomUrl,
-            onSetPromptMode = viewModel::setWebCompanionPromptMode,
-            onUpdateResponseText = viewModel::updateWebCompanionResponseText,
-            onToggleFileSelection = viewModel::toggleWebCompanionFileSelection,
-            onApplyChanges = viewModel::applyWebCompanionChanges,
-        )
     }
 }
 
@@ -1538,18 +1511,6 @@ private fun RootScreenHost(
                     onToggleTheme = viewModel::toggleTheme,
                     onInstallUpdate = viewModel::installAppUpdate,
                 )
-                RootScreen.MODELS -> LocalModelGalleryScreen(
-                    state = state,
-                    onStartDownload = viewModel::startGalleryModelDownload,
-                    onPauseDownload = viewModel::pauseGalleryModelDownload,
-                    onCancelDownload = viewModel::cancelGalleryModelDownload,
-                    onLoadModel = viewModel::loadLocalModel,
-                    onUnloadModel = viewModel::unloadLocalModel,
-                    onDeleteModel = viewModel::deleteLocalModel,
-                    onVerifySha256 = viewModel::verifyLocalModelSha256,
-                    onImportLocalModel = viewModel::importLocalModel,
-                    onAddCustomModel = viewModel::addCustomGalleryModel,
-                )
                 RootScreen.TERMINAL -> TerminalScreen(
                     lines = terminalLines,
                     isRunning = isTerminalRunning,
@@ -1570,7 +1531,6 @@ private fun RootScreenHost(
                     onDiscoverModels = viewModel::discoverModels,
                     onValidateProvider = viewModel::validateProvider,
                     onSetThemeMode = viewModel::setThemeMode,
-                    onSetAiMode = viewModel::setAiMode,
                     onPing = viewModel::pingApi,
                     onClearTerminal = viewModel::clearTerminal,
                     getSavedApiKey = viewModel::getSavedApiKey,
@@ -1578,15 +1538,6 @@ private fun RootScreenHost(
                     initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
                     onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                     onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
-                    onImportLocalModel = viewModel::importLocalModel,
-                    onLoadLocalModel = viewModel::loadLocalModel,
-                    onUnloadLocalModel = viewModel::unloadLocalModel,
-                    onDeleteLocalModel = viewModel::deleteLocalModel,
-                    onVerifyLocalModelSha256 = viewModel::verifyLocalModelSha256,
-                    onOpenModelGallery = { screen = RootScreen.MODELS },
-                    onOpenWebCompanion = { viewModel.openWebCompanion() },
-                    onSetWebCompanionProvider = viewModel::setWebCompanionProvider,
-                    onSetWebCompanionCustomUrl = viewModel::setWebCompanionCustomUrl,
                 )
             }
         }
@@ -2568,7 +2519,7 @@ private fun WorkspaceScreen(
     onBack: () -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
-    onApproval: (Boolean, Boolean) -> Unit,
+    onApproval: (Boolean) -> Unit,
     onRefreshFiles: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
     onCloseFile: () -> Unit,
@@ -2594,9 +2545,6 @@ private fun WorkspaceScreen(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onBuildAndRunAndroid: () -> Unit,
-    onOpenWebCompanion: () -> Unit = {},
-    onRetryLastPrompt: () -> Unit = {},
-    onSetAiMode: (com.pocketforge.mobile.model.AiMode) -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
@@ -2770,16 +2718,6 @@ private fun WorkspaceScreen(
                             else Icon(Icons.Default.PlayArrow, "Build and run Android app")
                         }
                     }
-                    IconButton(
-                        onClick = onOpenWebCompanion,
-                        modifier = Modifier.testTag("workspace_web_companion_button"),
-                    ) {
-                        Icon(
-                            Icons.Default.Language,
-                            contentDescription = "Web Chat Companion",
-                            tint = if (state.aiMode == com.pocketforge.mobile.model.AiMode.WEB_CHAT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                     IconButton(onClick = { showChats = true }) { Icon(Icons.Default.History, "Project chats") }
                     if (state.isRunning) CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
                 },
@@ -2811,13 +2749,13 @@ private fun WorkspaceScreen(
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (selectedTab) {
                 WorkspaceTab.CHAT -> ChatTab(
-                    messages = state.messages,
-                    approval = state.pendingApproval,
-                    liveProcess = state.liveProcess,
-                    isRunning = state.isRunning,
-                    onSend = onSend,
-                    onStop = onStop,
-                    onApproval = onApproval,
+                    state.messages,
+                    state.pendingApproval,
+                    state.liveProcess,
+                    state.isRunning,
+                    onSend,
+                    onStop,
+                    onApproval,
                     listState = chatListState,
                     taskStartedAtMillis = state.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
                     taskFinishedAtMillis = state.taskFinishedAtMillis,
@@ -2833,17 +2771,6 @@ private fun WorkspaceScreen(
                         onTerminalOpened()
                         onTerminalPrepare(command)
                     },
-                    aiMode = state.aiMode,
-                    activeRoutingDecision = state.activeRoutingDecision,
-                    onSetAiMode = onSetAiMode,
-                    onOpenWebCompanion = onOpenWebCompanion,
-                    changes = state.changes,
-                    onUndoChanges = onUndoChanges,
-                    onKeepChanges = onKeepChanges,
-                    onUndoFileChange = onUndoFileChange,
-                    onKeepFileChange = onKeepFileChange,
-                    onRetryPrompt = onSend,
-                    onRetryLastPrompt = onRetryLastPrompt,
                 )
                 WorkspaceTab.FILES -> FilesTab(
                     files = state.workspaceFiles,
@@ -3202,7 +3129,7 @@ private fun ChatTab(
     isRunning: Boolean,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
-    onApproval: (Boolean, Boolean) -> Unit,
+    onApproval: (Boolean) -> Unit,
     listState: LazyListState,
     taskStartedAtMillis: Long?,
     taskFinishedAtMillis: Long?,
@@ -3212,17 +3139,6 @@ private fun ChatTab(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onRunInTerminal: (String) -> Unit,
-    aiMode: com.pocketforge.mobile.model.AiMode = com.pocketforge.mobile.model.AiMode.DEFAULT,
-    activeRoutingDecision: com.pocketforge.mobile.runtime.RoutingDecision? = null,
-    onSetAiMode: (com.pocketforge.mobile.model.AiMode) -> Unit = {},
-    onOpenWebCompanion: () -> Unit = {},
-    changes: List<ChangeItem> = emptyList(),
-    onUndoChanges: () -> Unit = {},
-    onKeepChanges: () -> Unit = {},
-    onUndoFileChange: (String) -> Unit = {},
-    onKeepFileChange: (String) -> Unit = {},
-    onRetryPrompt: (String) -> Unit = {},
-    onRetryLastPrompt: () -> Unit = {},
 ) {
     val view = LocalView.current
     // Keep the screen on while Claude is working in this chat. Released automatically
@@ -3232,8 +3148,6 @@ private fun ChatTab(
         onDispose { view.keepScreenOn = false }
     }
     var prompt by rememberSaveable { mutableStateOf("") }
-    var showDiffSheet by rememberSaveable { mutableStateOf(false) }
-    var showModelPicker by rememberSaveable { mutableStateOf(false) }
     val chatScope = rememberCoroutineScope()
     // True while the newest item (message, live panel, or approval card) is on screen.
     val readerAtBottom by remember {
@@ -3242,58 +3156,6 @@ private fun ChatTab(
         }
     }
     Column(Modifier.fillMaxSize().imePadding()) {
-        if (isRunning) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.4f)),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(15.dp),
-                        strokeWidth = 2.dp,
-                        color = PocketOrange,
-                    )
-                    Spacer(Modifier.width(9.dp))
-                    val runningTitle = when {
-                        activeRoutingDecision != null -> activeRoutingDecision.modelLabel
-                        aiMode == com.pocketforge.mobile.model.AiMode.AUTO -> "Smart Auto Router"
-                        aiMode == com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> "Local Model"
-                        aiMode == com.pocketforge.mobile.model.AiMode.WEB_CHAT -> "Web Chat Companion"
-                        aiMode == com.pocketforge.mobile.model.AiMode.API -> "Direct API"
-                        else -> "Claude Code"
-                    }
-                    Text(
-                        "$runningTitle is running...",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f),
-                    )
-                    FilledTonalButton(
-                        onClick = onStop,
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(26.dp).testTag("chat_top_stop_button"),
-                    ) {
-                        Icon(Icons.Default.Stop, null, modifier = Modifier.size(13.dp))
-                        Spacer(Modifier.width(3.dp))
-                        Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
         Box(Modifier.weight(1f)) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -3301,24 +3163,14 @@ private fun ChatTab(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                itemsIndexed(messages, key = { _, it -> it.id }) { index, message ->
-                    val isLast = index == messages.lastIndex
+                items(messages, key = { it.id }) { message ->
                     if (message.workItems.isNotEmpty() || message.workedMillis > 0L) {
                         WorkBlockCard(message)
                     } else {
-                        MessageBubble(
-                            message = message,
-                            onRunInTerminal = onRunInTerminal,
-                            onOpenAttachment = onOpenAttachment,
-                            isStreaming = isRunning && isLast && !message.fromUser,
-                            onRetry = if (!isRunning && isLast && !message.fromUser) {
-                                val prevUserPrompt = messages.lastOrNull { it.fromUser }?.text
-                                if (!prevUserPrompt.isNullOrBlank()) { { onRetryPrompt(prevUserPrompt) } } else null
-                            } else null,
-                        )
+                        MessageBubble(message, onRunInTerminal, onOpenAttachment)
                     }
                 }
-                if (liveProcess.isNotEmpty() || thinkingActive || isRunning) {
+                if (liveProcess.isNotEmpty() || thinkingActive) {
                     item(key = "live-claude-process") {
                         LiveClaudeProcess(
                             processItems = liveProcess,
@@ -3326,53 +3178,6 @@ private fun ChatTab(
                             startedAtMillis = taskStartedAtMillis,
                             finishedAtMillis = taskFinishedAtMillis,
                             thinkingActive = thinkingActive,
-                            onStop = onStop,
-                        )
-                    }
-                }
-                val lastActivity = liveProcess.lastOrNull()
-                val isInterrupted = !isRunning && (
-                    lastActivity?.title?.startsWith("Task stopped") == true ||
-                    lastActivity?.title?.contains("failed", true) == true
-                )
-                if (isInterrupted) {
-                    item(key = "task-interrupted-banner") {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("Task interrupted or stopped", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                    Text(lastActivity?.detail?.take(100) ?: "Tap retry to re-run your request.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                OutlinedButton(
-                                    onClick = onRetryLastPrompt,
-                                    modifier = Modifier.testTag("task_retry_banner_button"),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                ) {
-                                    Icon(Icons.Default.Refresh, null, modifier = Modifier.size(14.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Retry", fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-                if (changes.isNotEmpty()) {
-                    item(key = "agent-diff-card") {
-                        AgentDiffCard(
-                            changes = changes,
-                            onViewDiff = { showDiffSheet = true },
-                            onUndo = onUndoChanges,
-                            onKeep = onKeepChanges,
                         )
                     }
                 }
@@ -3442,77 +3247,6 @@ private fun ChatTab(
                     }
                 }
 
-                // Model routing status and quick manual override pill
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { showModelPicker = true }
-                            .testTag("chat_model_selector_chip"),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Icon(
-                                imageVector = when (aiMode) {
-                                    com.pocketforge.mobile.model.AiMode.AUTO -> Icons.Default.AutoAwesome
-                                    com.pocketforge.mobile.model.AiMode.CLAUDE_CODE -> Icons.Default.Terminal
-                                    com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> Icons.Default.Memory
-                                    com.pocketforge.mobile.model.AiMode.WEB_CHAT -> Icons.Default.Language
-                                    com.pocketforge.mobile.model.AiMode.API -> Icons.Default.Cloud
-                                },
-                                contentDescription = null,
-                                tint = PocketOrange,
-                                modifier = Modifier.size(13.dp),
-                            )
-                            Text(
-                                text = when (aiMode) {
-                                    com.pocketforge.mobile.model.AiMode.AUTO -> if (activeRoutingDecision != null) "Auto: ${activeRoutingDecision.modelLabel}" else "Auto AI"
-                                    com.pocketforge.mobile.model.AiMode.CLAUDE_CODE -> "Claude Code"
-                                    com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> "Local Model"
-                                    com.pocketforge.mobile.model.AiMode.WEB_CHAT -> "Web Companion"
-                                    com.pocketforge.mobile.model.AiMode.API -> "Direct API"
-                                },
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Icon(
-                                imageVector = Icons.Default.ArrowDropDown,
-                                contentDescription = "Switch AI model",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(15.dp),
-                            )
-                        }
-                    }
-
-                    if (activeRoutingDecision?.isPaidApi == true) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f),
-                        ) {
-                            Text(
-                                text = "Paid API",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                }
-
                 val canSend = prompt.isNotBlank() || pendingAttachments.isNotEmpty()
 
                 Surface(
@@ -3543,18 +3277,6 @@ private fun ChatTab(
                             )
                         }
 
-                        IconButton(
-                            onClick = onOpenWebCompanion,
-                            modifier = Modifier.size(40.dp).testTag("chat_open_web_companion_button"),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Language,
-                                contentDescription = "Web Chat Companion",
-                                modifier = Modifier.size(20.dp),
-                                tint = if (aiMode == com.pocketforge.mobile.model.AiMode.WEB_CHAT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-
                         BasicTextField(
                             value = prompt,
                             onValueChange = { prompt = it },
@@ -3573,13 +3295,7 @@ private fun ChatTab(
                                 Box(contentAlignment = Alignment.CenterStart) {
                                     if (prompt.isEmpty()) {
                                         Text(
-                                            text = when (aiMode) {
-                                                com.pocketforge.mobile.model.AiMode.AUTO -> "Ask Auto AI (routes dynamically)…"
-                                                com.pocketforge.mobile.model.AiMode.WEB_CHAT -> "Message Web Companion…"
-                                                com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> "Message Local Model…"
-                                                com.pocketforge.mobile.model.AiMode.API -> "Message Direct API…"
-                                                else -> "Message Claude…"
-                                            },
+                                            text = "Message Claude…",
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             fontSize = 15.sp,
                                         )
@@ -3640,114 +3356,6 @@ private fun ChatTab(
                 }
             }
         }
-        if (showModelPicker) {
-            AlertDialog(
-                onDismissRequest = { showModelPicker = false },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.Tune, contentDescription = null, tint = PocketOrange)
-                        Text("Select AI Routing / Model")
-                    }
-                },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            "Choose an engine or allow Auto AI to dynamically route between Claude Code, Local Models, or API based on task complexity and network availability.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        com.pocketforge.mobile.model.AiMode.values().forEach { mode ->
-                            val isSelected = aiMode == mode
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        onSetAiMode(mode)
-                                        showModelPicker = false
-                                    }
-                                    .testTag("model_option_${mode.name.lowercase()}"),
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = when (mode) {
-                                            com.pocketforge.mobile.model.AiMode.AUTO -> Icons.Default.AutoAwesome
-                                            com.pocketforge.mobile.model.AiMode.CLAUDE_CODE -> Icons.Default.Terminal
-                                            com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> Icons.Default.Memory
-                                            com.pocketforge.mobile.model.AiMode.WEB_CHAT -> Icons.Default.Language
-                                            com.pocketforge.mobile.model.AiMode.API -> Icons.Default.Cloud
-                                        },
-                                        contentDescription = null,
-                                        tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            text = when (mode) {
-                                                com.pocketforge.mobile.model.AiMode.AUTO -> "Auto AI (Recommended)"
-                                                com.pocketforge.mobile.model.AiMode.CLAUDE_CODE -> "Claude Code (Autonomous)"
-                                                com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> "Local Model (Offline / GGUF)"
-                                                com.pocketforge.mobile.model.AiMode.WEB_CHAT -> "Web Chat Companion"
-                                                com.pocketforge.mobile.model.AiMode.API -> "Direct API (Configured Provider)"
-                                            },
-                                            fontSize = 13.sp,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                        )
-                                        Text(
-                                            text = when (mode) {
-                                                com.pocketforge.mobile.model.AiMode.AUTO -> "Auto-routes simple edits to Local, complex architecture & tools to Claude Code"
-                                                com.pocketforge.mobile.model.AiMode.CLAUDE_CODE -> "Full autonomous tool-calling loops with terminal & file inspection"
-                                                com.pocketforge.mobile.model.AiMode.LOCAL_MODEL -> "Zero latency on-device inference without cloud dependencies"
-                                                com.pocketforge.mobile.model.AiMode.WEB_CHAT -> "Browser companion for interactive assistance"
-                                                com.pocketforge.mobile.model.AiMode.API -> "Direct stateless calls to Gemini, Anthropic, OpenAI, or Ollama"
-                                            },
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            lineHeight = 15.sp,
-                                        )
-                                    }
-                                    if (isSelected) {
-                                        Icon(
-                                            Icons.Default.CheckCircle,
-                                            contentDescription = "Selected",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showModelPicker = false }) {
-                        Text("Close")
-                    }
-                },
-            )
-        }
-        if (showDiffSheet && changes.isNotEmpty()) {
-            DiffViewerBottomSheet(
-                changes = changes,
-                onDismiss = { showDiffSheet = false },
-                onUndoAll = onUndoChanges,
-                onKeepAll = onKeepChanges,
-                onUndoFile = onUndoFileChange,
-                onKeepFile = onKeepFileChange,
-            )
-        }
     }
 }
 
@@ -3758,127 +3366,22 @@ private fun LiveClaudeProcess(
     startedAtMillis: Long?,
     finishedAtMillis: Long?,
     thinkingActive: Boolean,
-    onStop: (() -> Unit)? = null,
 ) {
     val elapsedSeconds = startedAtMillis?.let { rememberLiveElapsedSeconds(it).toLong() } ?: 0L
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isRunning) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        ),
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(
-            1.dp,
-            if (isRunning) PocketOrange.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-        ),
-    ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (isRunning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = PocketOrange,
-                    )
-                } else {
-                    Icon(
-                        Icons.Default.Check,
-                        null,
-                        modifier = Modifier.size(18.dp),
-                        tint = PocketGreen,
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (isRunning) "Agent Working" else "Agent Steps",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(Modifier.width(6.dp))
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                ) {
-                    Text(
-                        formatDuration(elapsedSeconds),
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                if (isRunning && onStop != null) {
-                    FilledTonalButton(
-                        onClick = onStop,
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp).testTag("live_process_stop_button"),
-                    ) {
-                        Icon(Icons.Default.Stop, null, modifier = Modifier.size(13.dp))
-                        Spacer(Modifier.width(3.dp))
-                        Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 8.dp),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-            )
-
-            ClaudeActivityDisclosure(
-                items = processItems,
-                headline = activityHeadline(processItems, elapsedSeconds, thinkingActive),
-                isRunning = isRunning,
-            )
-        }
-    }
+    ClaudeActivityDisclosure(
+        items = processItems,
+        headline = activityHeadline(processItems, elapsedSeconds, thinkingActive),
+        isRunning = isRunning,
+    )
 }
 
 @Composable
 private fun WorkBlockCard(message: ChatMessage) {
     val seconds = (message.workedMillis / 1_000L).coerceAtLeast(1L)
-    Column {
-        if (message.routingBadge != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(6.dp),
-                modifier = Modifier.padding(start = 6.dp, bottom = 4.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        tint = PocketOrange,
-                        modifier = Modifier.size(10.dp),
-                    )
-                    Text(
-                        text = message.routingBadge,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        ClaudeActivityDisclosure(
-            items = message.workItems,
-            headline = activityHeadline(message.workItems, seconds, message.workItems.isEmpty()),
-        )
-    }
+    ClaudeActivityDisclosure(
+        items = message.workItems,
+        headline = activityHeadline(message.workItems, seconds, message.workItems.isEmpty()),
+    )
 }
 
 @Composable
@@ -4175,21 +3678,12 @@ private fun formatDuration(totalSeconds: Long): String = when {
 }
 
 @Composable
-private fun MessageBubble(
-    message: ChatMessage,
-    onRunInTerminal: (String) -> Unit,
-    onOpenAttachment: (ChatAttachment) -> Unit,
-    isStreaming: Boolean = false,
-    onRetry: (() -> Unit)? = null,
-) {
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Unit, onOpenAttachment: (ChatAttachment) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start) {
         Surface(
             color = if (message.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(18.dp),
             modifier = Modifier.fillMaxWidth(if (message.fromUser) .82f else .92f),
-            border = if (!message.fromUser) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)) else null,
         ) {
             Column(Modifier.padding(top = 12.dp)) {
                 SelectionContainer {
@@ -4201,77 +3695,12 @@ private fun MessageBubble(
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     } else {
-                        Column {
-                            if (message.routingBadge != null) {
-                                var showReason by remember { mutableStateOf(false) }
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier
-                                        .padding(start = 14.dp, bottom = 6.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable(enabled = message.routingReason != null) { showReason = !showReason },
-                                ) {
-                                    Column(modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.AutoAwesome,
-                                                contentDescription = null,
-                                                tint = PocketOrange,
-                                                modifier = Modifier.size(11.dp),
-                                            )
-                                            Text(
-                                                text = message.routingBadge,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                            )
-                                            if (message.routingReason != null) {
-                                                Icon(
-                                                    imageVector = if (showReason) Icons.Default.ExpandLess else Icons.Default.Info,
-                                                    contentDescription = "Routing info",
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                    modifier = Modifier.size(11.dp),
-                                                )
-                                            }
-                                        }
-                                        if (showReason && message.routingReason != null) {
-                                            Spacer(Modifier.height(2.dp))
-                                            Text(
-                                                text = message.routingReason,
-                                                fontSize = 10.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                lineHeight = 14.sp,
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            MarkdownText(
-                                markdown = message.text,
-                                modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 4.dp),
-                                color = MaterialTheme.colorScheme.onSurface,
-                                onRunCode = onRunInTerminal,
-                            )
-                            if (isStreaming) {
-                                Row(
-                                    modifier = Modifier.padding(start = 14.dp, bottom = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    AnimatedThinkingDots(dotColor = PocketOrange)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        "Streaming…",
-                                        fontSize = 11.sp,
-                                        color = PocketOrange,
-                                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                                    )
-                                }
-                            }
-                        }
+                        MarkdownText(
+                            markdown = message.text,
+                            modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            onRunCode = onRunInTerminal,
+                        )
                     }
                 }
                 if (message.attachments.isNotEmpty()) {
@@ -4284,346 +3713,7 @@ private fun MessageBubble(
                         }
                     }
                 }
-                if (!message.fromUser && !isStreaming && message.text.isNotBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(
-                            onClick = {
-                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(message.text))
-                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.size(28.dp).testTag("chat_message_copy_button"),
-                        ) {
-                            Icon(
-                                Icons.Default.Description,
-                                "Copy response",
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            )
-                        }
-                        if (onRetry != null) {
-                            IconButton(
-                                onClick = onRetry,
-                                modifier = Modifier.size(28.dp).testTag("chat_message_retry_button"),
-                            ) {
-                                Icon(
-                                    Icons.Default.Refresh,
-                                    "Retry prompt",
-                                    modifier = Modifier.size(15.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                )
-                            }
-                        }
-                    }
-                }
                 Spacer(Modifier.height(4.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun AgentDiffCard(
-    changes: List<ChangeItem>,
-    onViewDiff: () -> Unit,
-    onUndo: () -> Unit,
-    onKeep: () -> Unit,
-) {
-    val totalAdditions = changes.sumOf { it.additions }
-    val totalDeletions = changes.sumOf { it.deletions }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        ),
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.35f)),
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = PocketOrange.copy(alpha = 0.15f),
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Code, null, tint = PocketOrange, modifier = Modifier.size(18.dp))
-                    }
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "${changes.size} file${if (changes.size == 1) "" else "s"} modified",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("+$totalAdditions lines", fontSize = 12.sp, color = PocketGreen, fontWeight = FontWeight.SemiBold)
-                        Text("-$totalDeletions lines", fontSize = 12.sp, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                changes.forEach { fileChange ->
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                fileChange.path.substringAfterLast('/'),
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text("+${fileChange.additions}", fontSize = 10.sp, color = PocketGreen)
-                            Text("-${fileChange.deletions}", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedButton(
-                    onClick = onUndo,
-                    modifier = Modifier.weight(1f).testTag("chat_undo_changes_button"),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                ) {
-                    Icon(Icons.Default.History, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Undo", fontSize = 13.sp)
-                }
-
-                Button(
-                    onClick = onViewDiff,
-                    modifier = Modifier.weight(1.3f).testTag("chat_view_diff_button"),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                ) {
-                    Icon(Icons.Default.Preview, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("View Diff", fontSize = 13.sp)
-                }
-
-                OutlinedButton(
-                    onClick = onKeep,
-                    modifier = Modifier.weight(1f).testTag("chat_keep_changes_button"),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                ) {
-                    Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Keep", fontSize = 13.sp)
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun DiffViewerBottomSheet(
-    changes: List<ChangeItem>,
-    onDismiss: () -> Unit,
-    onUndoAll: () -> Unit,
-    onKeepAll: () -> Unit,
-    onUndoFile: (String) -> Unit,
-    onKeepFile: (String) -> Unit,
-) {
-    var selectedFileIndex by rememberSaveable { mutableIntStateOf(0) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val currentChange = changes.getOrNull(selectedFileIndex.coerceIn(0, (changes.size - 1).coerceAtLeast(0)))
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        dragHandle = null,
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.88f)
-                .navigationBarsPadding(),
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Review Changes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    val totalAdds = changes.sumOf { it.additions }
-                    val totalDels = changes.sumOf { it.deletions }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("${changes.size} file(s) modified", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("+$totalAdds", fontSize = 12.sp, color = PocketGreen, fontWeight = FontWeight.Bold)
-                        Text("-$totalDels", fontSize = 12.sp, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                    }
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, "Close diff")
-                }
-            }
-
-            if (changes.size > 1) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    changes.forEachIndexed { index, change ->
-                        val isSelected = index == selectedFileIndex
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                            ),
-                            modifier = Modifier.clickable { selectedFileIndex = index },
-                        ) {
-                            Row(
-                                Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Text(
-                                    change.path.substringAfterLast('/'),
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                )
-                                Text("+${change.additions}", fontSize = 10.sp, color = PocketGreen)
-                                Text("-${change.deletions}", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                }
-            }
-
-            currentChange?.let { change ->
-                Surface(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            change.path,
-                            modifier = Modifier.weight(1f),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        TextButton(
-                            onClick = { onUndoFile(change.path) },
-                            modifier = Modifier.testTag("diff_undo_file_button"),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        ) {
-                            Text("Undo File", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
-                        }
-                        TextButton(
-                            onClick = { onKeepFile(change.path) },
-                            modifier = Modifier.testTag("diff_keep_file_button"),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        ) {
-                            Text("Keep File", fontSize = 11.sp)
-                        }
-                    }
-                }
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(Color(0xFF0B0E14)),
-                ) {
-                    LazyColumn(
-                        Modifier
-                            .fillMaxSize()
-                            .horizontalScroll(rememberScrollState()),
-                        contentPadding = PaddingValues(vertical = 4.dp),
-                    ) {
-                        items(change.diffLines) { line ->
-                            DiffLineRow(line)
-                        }
-                    }
-                }
-            } ?: Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Text("No changes recorded", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            Surface(
-                Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surface,
-                shadowElevation = 8.dp,
-            ) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            onUndoAll()
-                            onDismiss()
-                        },
-                        modifier = Modifier.weight(1f).testTag("diff_modal_undo_all_button"),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    ) {
-                        Icon(Icons.Default.History, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Undo All")
-                    }
-                    Button(
-                        onClick = {
-                            onKeepAll()
-                            onDismiss()
-                        },
-                        modifier = Modifier.weight(1f).testTag("diff_modal_keep_all_button"),
-                    ) {
-                        Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Keep All")
-                    }
-                }
             }
         }
     }
@@ -4662,123 +3752,18 @@ private fun AttachmentChip(
 }
 
 @Composable
-private fun ApprovalCard(request: ToolRequest, onApproval: (Boolean, Boolean) -> Unit) {
-    val isHighRisk = request.risk == com.pocketforge.mobile.model.RiskLevel.HIGH
-    val containerColor = if (isHighRisk) {
-        MaterialTheme.colorScheme.errorContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    val contentColor = if (isHighRisk) {
-        MaterialTheme.colorScheme.onErrorContainer
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Card(
-        colors = CardDefaults.cardColors(containerColor = containerColor),
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
-    ) {
+private fun ApprovalCard(request: ToolRequest, onApproval: (Boolean) -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    if (isHighRisk) Icons.Default.Warning else Icons.Default.Code,
-                    contentDescription = null,
-                    tint = if (isHighRisk) MaterialTheme.colorScheme.error else PocketOrange,
-                    modifier = Modifier.size(22.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = if (isHighRisk) "High-Risk Action (Always Confirm)" else "Review Action",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    color = if (isHighRisk) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                )
+                Icon(Icons.Default.Warning, null, tint = PocketOrange)
+                Spacer(Modifier.width(8.dp)); Text("Review this action", fontWeight = FontWeight.Bold)
             }
-
-            Text(
-                text = request.explanation,
-                fontSize = 13.sp,
-                color = contentColor,
-            )
-
-            if (!request.commandPreview.isNullOrBlank()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = "$ " + request.commandPreview,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(10.dp),
-                    )
-                }
-            }
-
-            if (request.affectedPaths.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        "Affected files:",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = contentColor,
-                    )
-                    request.affectedPaths.forEach { path ->
-                        Text(
-                            "• $path",
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = contentColor.copy(alpha = 0.85f),
-                        )
-                    }
-                }
-            }
-
-            if (isHighRisk) {
-                Text(
-                    "⚠️ Destructive, remote, or credential-access commands require explicit confirmation every time and cannot be remembered.",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedButton(
-                    onClick = { onApproval(false, false) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Reject", maxLines = 1)
-                }
-
-                if (!isHighRisk && request.canRememberForSession) {
-                    OutlinedButton(
-                        onClick = { onApproval(true, true) },
-                        modifier = Modifier.weight(1.3f),
-                    ) {
-                        Text("Allow for session", maxLines = 1, fontSize = 12.sp)
-                    }
-                }
-
-                Button(
-                    onClick = { onApproval(true, false) },
-                    colors = if (isHighRisk) {
-                        ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                    } else {
-                        ButtonDefaults.buttonColors(containerColor = PocketOrange)
-                    },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(if (isHighRisk) "Confirm" else "Allow once", maxLines = 1)
-                }
+            Text(request.explanation)
+            request.affectedPaths.forEach { Text("• $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onApproval(false) }, Modifier.weight(1f)) { Text("Reject") }
+                Button(onClick = { onApproval(true) }, Modifier.weight(1f)) { Text("Allow once") }
             }
         }
     }

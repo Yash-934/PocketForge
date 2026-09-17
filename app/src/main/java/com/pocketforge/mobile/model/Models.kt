@@ -102,64 +102,7 @@ data class WorkspaceEntry(
     val sizeBytes: Long = 0,
 )
 
-enum class RiskLevel {
-    SAFE,       // Read, Search, Glob, Git status/diff, etc. -> Automatic
-    NORMAL,     // Workspace edits, file creation, lint, build, test -> Automatic when workspace is trusted
-    REVIEW,     // Risky: dependency install, network calls, destructive changes -> Requires approval / can allow for session
-    HIGH,       // High Risk: rm -rf, git reset --hard, git push, credential access -> ALWAYS confirm explicitly
-}
-
-/**
- * Supported AI execution modes in PocketForge.
- * Claude Code is the primary and default autonomous coding agent.
- * Other backends are clearly marked as coming-soon until implemented.
- */
-enum class AiMode(
-    val title: String,
-    val subtitle: String,
-    val isAvailable: Boolean,
-    val badgeText: String? = null,
-) {
-    AUTO(
-        title = "Smart Auto Router",
-        subtitle = "Intelligently routes between Local Model and Claude Code based on task complexity & connectivity",
-        isAvailable = true,
-        badgeText = "Auto",
-    ),
-    CLAUDE_CODE(
-        title = "Claude Code",
-        subtitle = "Autonomous coding agent with full workspace access, tool use & sandbox terminal",
-        isAvailable = true,
-        badgeText = "Primary",
-    ),
-    LOCAL_MODEL(
-        title = "Local Model",
-        subtitle = "On-device inference using local GGUF models without internet connection",
-        isAvailable = true,
-        badgeText = "Offline",
-    ),
-    WEB_CHAT(
-        title = "Web Chat Companion",
-        subtitle = "Use web AI (Claude, ChatGPT, DeepSeek, Gemini) via manual login and clean copy-paste workflow",
-        isAvailable = true,
-        badgeText = "No API Key",
-    ),
-    API(
-        title = "Direct API",
-        subtitle = "Direct model completions via cloud LLM APIs",
-        isAvailable = true,
-        badgeText = "Cloud",
-    );
-
-    companion object {
-        val DEFAULT = AUTO
-
-        fun fromString(value: String?): AiMode {
-            if (value.isNullOrBlank()) return DEFAULT
-            return entries.firstOrNull { it.name.equals(value, ignoreCase = true) } ?: DEFAULT
-        }
-    }
-}
+enum class RiskLevel { SAFE, REVIEW, HIGH }
 
 /**
  * Optional development toolchains the user can pick during onboarding.
@@ -206,7 +149,6 @@ data class ToolRequest(
     val affectedPaths: List<String> = emptyList(),
     val commandPreview: String? = null,
     val risk: RiskLevel,
-    val canRememberForSession: Boolean = (risk == RiskLevel.REVIEW),
 )
 
 sealed interface RuntimeEvent {
@@ -252,8 +194,6 @@ data class ChatMessage(
     val attachments: List<ChatAttachment> = emptyList(),
     val workItems: List<ActivityItem> = emptyList(),
     val workedMillis: Long = 0L,
-    val routingBadge: String? = null,
-    val routingReason: String? = null,
 )
 
 data class ChatAttachment(
