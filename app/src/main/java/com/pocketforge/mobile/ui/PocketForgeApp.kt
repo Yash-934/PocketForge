@@ -104,6 +104,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -303,6 +304,8 @@ fun PocketForgeApp(viewModel: MainViewModel = viewModel()) {
             onTerminalCancel = viewModel::cancelProjectTerminalCommand,
             onUseSuggestedProjectRoot = viewModel::useSuggestedProjectRoot,
             onExportProject = viewModel::exportActiveProject,
+            onUploadZipToProject = viewModel::uploadZipToActiveProject,
+            onUploadFilesToProject = viewModel::uploadFilesToActiveProject,
             onAddAttachments = viewModel::addChatAttachments,
             onRemoveAttachment = viewModel::removePendingAttachment,
             onOpenAttachment = viewModel::openChatAttachment,
@@ -1504,6 +1507,7 @@ private fun RootScreenHost(
                     onOpen = viewModel::openProject,
                     onCreate = viewModel::createProject,
                     onCreateQuickProject = viewModel::createQuickProject,
+                    onUploadProject = viewModel::uploadProjectZip,
                     onRenameProject = viewModel::renameProject,
                     onDeleteProject = viewModel::deleteProject,
                     onSettings = { screen = RootScreen.SETTINGS },
@@ -2142,6 +2146,7 @@ private fun ProjectsScreen(
     onOpen: (Project) -> Unit,
     onCreate: (String) -> Unit,
     onCreateQuickProject: () -> Unit,
+    onUploadProject: (Uri) -> Unit,
     onRenameProject: (String, String) -> Unit,
     onDeleteProject: (String) -> Unit,
     onSettings: () -> Unit,
@@ -2154,6 +2159,10 @@ private fun ProjectsScreen(
     var name by rememberSaveable { mutableStateOf("") }
     val projects = state.projects
     val context = LocalContext.current
+    val uploadProjectLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri -> if (uri != null) onUploadProject(uri) },
+    )
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         onInstallUpdate()
     }
@@ -2227,6 +2236,33 @@ private fun ProjectsScreen(
                         )
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        uploadProjectLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*"))
+                    },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Upload,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = PocketOrange,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Upload / Import project (ZIP)",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
             state.appUpdate?.let { update ->
                 item {
@@ -2289,12 +2325,38 @@ private fun ProjectsScreen(
                                 textAlign = TextAlign.Center,
                             )
                             Text(
-                                "Create a named project or start instantly with a Quick Project.",
+                                "Upload an existing project ZIP, start a Quick project, or create a named project.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
                                 lineHeight = 20.sp,
                             )
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        uploadProjectLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*"))
+                                    },
+                                    modifier = Modifier.weight(1f).height(42.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Icon(Icons.Default.Upload, null, Modifier.size(16.dp), tint = PocketOrange)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Upload ZIP", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Button(
+                                    onClick = onCreateQuickProject,
+                                    modifier = Modifier.weight(1f).height(42.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Icon(Icons.Default.Chat, null, Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Quick Start", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
                         }
                     }
                 }
@@ -2541,6 +2603,8 @@ private fun WorkspaceScreen(
     onTerminalCancel: () -> Unit,
     onUseSuggestedProjectRoot: () -> Unit,
     onExportProject: (Uri) -> Unit,
+    onUploadZipToProject: (Uri) -> Unit,
+    onUploadFilesToProject: (List<Uri>) -> Unit,
     onAddAttachments: (List<Uri>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
@@ -2553,6 +2617,14 @@ private fun WorkspaceScreen(
     val exportProjectLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
         onResult = { uri -> if (uri != null) onExportProject(uri) },
+    )
+    val uploadZipLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri -> if (uri != null) onUploadZipToProject(uri) },
+    )
+    val uploadFilesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        onResult = { uris -> if (uris.isNotEmpty()) onUploadFilesToProject(uris) },
     )
     val attachmentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
@@ -2782,6 +2854,12 @@ private fun WorkspaceScreen(
                     onExport = {
                         exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
                     },
+                    onUploadZip = {
+                        uploadZipLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream", "*/*"))
+                    },
+                    onUploadFiles = {
+                        uploadFilesLauncher.launch(arrayOf("*/*"))
+                    },
                 )
                 WorkspaceTab.TERMINAL -> TerminalScreen(
                     lines = state.projectTerminalLines,
@@ -2987,8 +3065,11 @@ private fun FilesTab(
     onOpenFile: (WorkspaceEntry) -> Unit,
     onUseSuggestedProjectRoot: () -> Unit,
     onExport: () -> Unit,
+    onUploadZip: () -> Unit,
+    onUploadFiles: () -> Unit,
 ) {
     var expandedDirectories by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var uploadMenuOpen by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(files.map { it.path }) {
         val directories = files.asSequence().filter { it.isDirectory }.map { it.path }.toSet()
         expandedDirectories = expandedDirectories.filter { it in directories }
@@ -3032,6 +3113,32 @@ private fun FilesTab(
                             Text("Collapse all", fontSize = 11.sp)
                         }
                     }
+                    Box {
+                        IconButton(onClick = { uploadMenuOpen = true }) {
+                            Icon(Icons.Default.Upload, "Upload files or ZIP archive")
+                        }
+                        DropdownMenu(
+                            expanded = uploadMenuOpen,
+                            onDismissRequest = { uploadMenuOpen = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Upload project ZIP") },
+                                leadingIcon = { Icon(Icons.Default.Folder, null, tint = PocketOrange) },
+                                onClick = {
+                                    uploadMenuOpen = false
+                                    onUploadZip()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Upload individual files") },
+                                leadingIcon = { Icon(Icons.Default.Description, null) },
+                                onClick = {
+                                    uploadMenuOpen = false
+                                    onUploadFiles()
+                                },
+                            )
+                        }
+                    }
                     if (!loading && files.any { !it.isDirectory }) {
                         IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
                     }
@@ -3061,7 +3168,77 @@ private fun FilesTab(
             }
         }
         if (!loading && files.isEmpty()) {
-            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask Claude Code to create something in this project.") }
+            item {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 10.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = PocketOrange.copy(alpha = 0.15f),
+                            modifier = Modifier.size(56.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.Folder,
+                                    contentDescription = null,
+                                    tint = PocketOrange,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "No files in project yet",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            "Upload an existing project ZIP or add files to start coding, or ask Claude Code in Chat.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 20.sp,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(
+                                onClick = onUploadZip,
+                                modifier = Modifier.weight(1f).height(42.dp),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Icon(Icons.Default.Upload, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Upload ZIP", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            OutlinedButton(
+                                onClick = onUploadFiles,
+                                modifier = Modifier.weight(1f).height(42.dp),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Icon(Icons.Default.AttachFile, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Add Files", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+            }
         }
         items(visibleFiles, key = { it.path }) { entry ->
             Row(

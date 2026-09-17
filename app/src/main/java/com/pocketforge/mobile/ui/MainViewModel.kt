@@ -43,11 +43,13 @@ import com.pocketforge.mobile.runtime.AndroidAppInstaller
 import com.pocketforge.mobile.update.AppUpdateInfo
 import com.pocketforge.mobile.update.AppUpdater
 import java.io.File
+import java.io.InputStream
 import java.io.RandomAccessFile
 import java.net.UnknownHostException
 import java.nio.file.Files
 import java.util.UUID
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -1415,6 +1417,203 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+    }
+
+    fun uploadProjectZip(uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        val rawName = queryDisplayName(uri)
+        val cleanName = rawName.substringBeforeLast('.', rawName)
+            .replace(Regex("[-_]+"), " ")
+            .trim()
+            .ifBlank { "Uploaded Project" }
+            .take(50)
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+
+        val baseSlug = projectSlug(cleanName)
+        val usedSlugs = _state.value.projects.mapTo(mutableSetOf()) { it.slug }
+        val slug = generateSequence(1) { it + 1 }
+            .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+            .first { it !in usedSlugs }
+
+        val project = Project(
+            name = cleanName,
+            description = "Imported from $rawName",
+            language = "General",
+            slug = slug,
+            kind = ProjectKind.PROJECT,
+        )
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val baseDir = File(getApplication<Application>().filesDir, "workspaces/${project.id}").apply { mkdirs() }
+                    val stream = resolver.openInputStream(uri) ?: error("Unable to open selected file")
+                    val extractedCount = stream.use { extractZipStream(it, baseDir) }
+                    extractedCount
+                }
+            }
+
+            result.fold(
+                onSuccess = { count ->
+                    val firstChat = ProjectChat(title = "New chat")
+                    preferences.saveProjectChats(project.id, listOf(firstChat))
+                    _state.update { it.copy(projects = listOf(project) + it.projects) }
+                    preferences.saveProjects(_state.value.projects)
+                    openProject(project)
+                    _state.update {
+                        it.copy(toastMessage = "Project '$cleanName' uploaded ($count files extracted)")
+                    }
+                },
+                onFailure = { error ->
+                    val filesDir = getApplication<Application>().filesDir
+                    File(filesDir, "workspaces/${project.id}").deleteRecursively()
+                    _state.update {
+                        it.copy(toastMessage = "Upload failed: ${error.message ?: "Failed to extract ZIP"}")
+                    }
+                }
+            )
+        }
+    }
+
+    fun uploadZipToActiveProject(uri: Uri) {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        if (current.isRunning || current.projectTerminalRunning) {
+            _state.update { it.copy(toastMessage = "Stop the running task before uploading files") }
+            return
+        }
+        val resolver = getApplication<Application>().contentResolver
+        viewModelScope.launch {
+            _state.update { it.copy(filesLoading = true) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val stream = resolver.openInputStream(uri) ?: error("Unable to open selected file")
+                    val extractedCount = stream.use { extractZipStream(it, root) }
+                    extractedCount
+                }
+            }
+            refreshProjectFiles()
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { count -> "$count file(s) extracted into project" },
+                        onFailure = { error -> "Extract failed: ${error.message ?: "Invalid ZIP"}" }
+                    )
+                )
+            }
+        }
+    }
+
+    fun uploadFilesToActiveProject(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val current = _state.value
+        val project = current.activeProject ?: return
+        if (current.isRunning || current.projectTerminalRunning) {
+            _state.update { it.copy(toastMessage = "Stop the running task before uploading files") }
+            return
+        }
+        val resolver = getApplication<Application>().contentResolver
+        viewModelScope.launch {
+            _state.update { it.copy(filesLoading = true) }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project).canonicalFile
+                    var copiedCount = 0
+                    uris.forEach { uri ->
+                        val rawName = queryDisplayName(uri)
+                        val fileName = sanitizeAttachmentName(rawName)
+                        if (fileName.isNotBlank()) {
+                            val dest = File(root, fileName).canonicalFile
+                            if (dest.toPath().startsWith(root.toPath())) {
+                                resolver.openInputStream(uri)?.buffered()?.use { input ->
+                                    dest.outputStream().buffered().use { output ->
+                                        input.copyTo(output)
+                                    }
+                                }
+                                copiedCount++
+                            }
+                        }
+                    }
+                    copiedCount
+                }
+            }
+            refreshProjectFiles()
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { count -> "$count file(s) added to project" },
+                        onFailure = { error -> "Upload failed: ${error.message ?: "Could not copy files"}" }
+                    )
+                )
+            }
+        }
+    }
+
+    private fun extractZipStream(
+        inputStream: InputStream,
+        targetDirectory: File,
+        maxTotalBytes: Long = 250_000_000L,
+    ): Int {
+        val targetCanonical = targetDirectory.canonicalFile
+        targetCanonical.mkdirs()
+        var fileCount = 0
+        var totalBytes = 0L
+
+        ZipInputStream(inputStream.buffered()).use { zipIn ->
+            var entry = zipIn.nextEntry
+            while (entry != null) {
+                val name = entry.name.replace('\\', '/')
+                if (!name.startsWith("__MACOSX/") && !name.contains("/__MACOSX/") && !name.endsWith(".DS_Store")) {
+                    val cleanPath = name.trimStart('/')
+                    if (cleanPath.isNotBlank()) {
+                        val destFile = File(targetCanonical, cleanPath).canonicalFile
+                        if (!destFile.toPath().startsWith(targetCanonical.toPath())) {
+                            throw SecurityException("Invalid ZIP entry path: ${entry.name}")
+                        }
+                        if (entry.isDirectory) {
+                            destFile.mkdirs()
+                        } else {
+                            destFile.parentFile?.mkdirs()
+                            destFile.outputStream().buffered().use { output ->
+                                val buffer = ByteArray(8192)
+                                var len: Int
+                                while (zipIn.read(buffer).also { len = it } > 0) {
+                                    totalBytes += len
+                                    if (totalBytes > maxTotalBytes) {
+                                        throw IllegalStateException("ZIP exceeds maximum allowed size (250 MB)")
+                                    }
+                                    output.write(buffer, 0, len)
+                                }
+                            }
+                            fileCount++
+                        }
+                    }
+                }
+                zipIn.closeEntry()
+                entry = zipIn.nextEntry
+            }
+        }
+        return fileCount
+    }
+
+    private fun queryDisplayName(uri: Uri): String {
+        var displayName: String? = null
+        runCatching {
+            getApplication<Application>().contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) displayName = cursor.getString(index)
+                }
+            }
+        }
+        return displayName ?: uri.lastPathSegment?.substringAfterLast('/') ?: "uploaded_project"
     }
 
     fun createChat() {
