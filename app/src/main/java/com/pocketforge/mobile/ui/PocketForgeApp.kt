@@ -82,6 +82,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -2622,14 +2624,16 @@ private fun ProjectCard(project: Project, onOpen: () -> Unit, onRename: (String)
         border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.22f)),
     ) {
         Row(
-            modifier = Modifier.padding(start = 14.dp, top = 14.dp, bottom = 14.dp, end = 6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = primaryColor.copy(alpha = 0.12f),
                 border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
-                modifier = Modifier.size(46.dp),
+                modifier = Modifier.size(44.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
@@ -2642,7 +2646,10 @@ private fun ProjectCard(project: Project, onOpen: () -> Unit, onRename: (String)
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text(
                         text = project.name,
                         fontWeight = FontWeight.Bold,
@@ -2671,8 +2678,12 @@ private fun ProjectCard(project: Project, onOpen: () -> Unit, onRename: (String)
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Box(Modifier.size(4.dp).background(primaryColor, CircleShape))
                     Spacer(Modifier.width(5.dp))
                     Text(
@@ -2680,17 +2691,24 @@ private fun ProjectCard(project: Project, onOpen: () -> Unit, onRename: (String)
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(
                         text = "· ${project.language} · ${project.formattedUpdatedAt}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
             Box {
-                IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "Project options") }
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.MoreVert, "Project options", modifier = Modifier.size(20.dp))
+                }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text("Rename project") },
@@ -2859,6 +2877,8 @@ private fun WorkspaceScreen(
     }
 
     var selectedTab by rememberSaveable { mutableStateOf(WorkspaceTab.CHAT) }
+    var previewFullscreen by rememberSaveable { mutableStateOf(true) }
+    val isPreviewFullscreen = selectedTab == WorkspaceTab.PREVIEW && previewFullscreen
     var showChats by rememberSaveable { mutableStateOf(false) }
     val activeChat = state.projectChats.firstOrNull { it.id == state.activeChatId }
 
@@ -2922,60 +2942,62 @@ private fun WorkspaceScreen(
     }
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(
-                            state.activeProject?.name.orEmpty(),
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = {
-                                    Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
-                                },
-                            ),
-                        )
-                        Text(
-                            "${activeChat?.title ?: "Chat"} · ${state.provider.kind.title}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") } },
-                actions = {
-                    if (isAndroidProject) {
-                        IconButton(
-                            onClick = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                                    !context.packageManager.canRequestPackageInstalls()) {
-                                    unknownAppsLauncher.launch(
-                                        Intent(
-                                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                                            Uri.parse("package:${context.packageName}"),
-                                        ),
-                                    )
-                                } else {
-                                    onBuildAndRunAndroid()
-                                }
-                            },
-                            enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
-                        ) {
-                            if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            else Icon(Icons.Default.PlayArrow, "Build and run Android app")
+            if (!isPreviewFullscreen) {
+                TopAppBar(
+                    title = {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(
+                                state.activeProject?.name.orEmpty(),
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = {},
+                                    onLongClick = {
+                                        Toast.makeText(context, state.activeProject?.name.orEmpty(), Toast.LENGTH_LONG).show()
+                                    },
+                                ),
+                            )
+                            Text(
+                                "${activeChat?.title ?: "Chat"} · ${state.provider.kind.title}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
                         }
-                    }
-                    IconButton(onClick = { showChats = true }) { Icon(Icons.Default.History, "Project chats") }
-                    if (state.isRunning) CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
+                    },
+                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Projects") } },
+                    actions = {
+                        if (isAndroidProject) {
+                            IconButton(
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                        !context.packageManager.canRequestPackageInstalls()) {
+                                        unknownAppsLauncher.launch(
+                                            Intent(
+                                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                                Uri.parse("package:${context.packageName}"),
+                                            ),
+                                        )
+                                    } else {
+                                        onBuildAndRunAndroid()
+                                    }
+                                },
+                                enabled = !state.androidBuildRunning && !state.isRunning && !state.projectTerminalRunning,
+                            ) {
+                                if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Default.PlayArrow, "Build and run Android app")
+                            }
+                        }
+                        IconButton(onClick = { showChats = true }) { Icon(Icons.Default.History, "Project chats") }
+                        if (state.isRunning) CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                )
+            }
         },
         bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            if (!keyboardVisible && !isPreviewFullscreen) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES }.forEach { tab ->
                     NavigationBarItem(
                         selected = selectedTab == tab,
@@ -2996,7 +3018,7 @@ private fun WorkspaceScreen(
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(if (isPreviewFullscreen) PaddingValues(0.dp) else padding)) {
             when (selectedTab) {
                 WorkspaceTab.CHAT -> ChatTab(
                     state.messages,
@@ -3127,7 +3149,12 @@ private fun WorkspaceScreen(
                     onUndoFileChange,
                     onKeepFileChange,
                 )
-                WorkspaceTab.PREVIEW -> PreviewTab(state.previewReady, state.previewUrl)
+                WorkspaceTab.PREVIEW -> PreviewTab(
+                    ready = state.previewReady,
+                    url = state.previewUrl,
+                    isFullscreen = previewFullscreen,
+                    onToggleFullscreen = { previewFullscreen = !previewFullscreen },
+                )
             }
         }
     }
@@ -5245,12 +5272,18 @@ private fun DiffLineRow(line: DiffLine) {
 }
 
 @Composable
-private fun PreviewTab(ready: Boolean, url: String?) {
+private fun PreviewTab(
+    ready: Boolean,
+    url: String?,
+    isFullscreen: Boolean = false,
+    onToggleFullscreen: () -> Unit = {},
+) {
     var address by rememberSaveable(url) { mutableStateOf(if (ready) url.orEmpty() else "") }
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
     var addressError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var showUrlBar by rememberSaveable { mutableStateOf(!isFullscreen) }
 
     val navigate = {
         val normalized = normalizePreviewUrl(address)
@@ -5272,102 +5305,166 @@ private fun PreviewTab(ready: Boolean, url: String?) {
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-            tonalElevation = 1.dp,
-        ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = address,
-                        onValueChange = {
-                            address = it
-                            addressError = null
-                        },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        label = { Text("Preview URL") },
-                        placeholder = { Text("localhost:3000") },
-                        leadingIcon = {
-                            Box(
-                                Modifier.size(8.dp).background(
-                                    if (activeUrl != null) PocketGreen else MaterialTheme.colorScheme.outline,
-                                    CircleShape,
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            if (showUrlBar || activeUrl == null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+                    tonalElevation = 2.dp,
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = address,
+                                onValueChange = {
+                                    address = it
+                                    addressError = null
+                                },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                label = { Text("Preview URL") },
+                                placeholder = { Text("localhost:3000") },
+                                leadingIcon = {
+                                    Box(
+                                        Modifier.size(8.dp).background(
+                                            if (activeUrl != null) PocketGreen else MaterialTheme.colorScheme.outline,
+                                            CircleShape,
+                                        ),
+                                    )
+                                },
+                                trailingIcon = {
+                                    IconButton(onClick = navigate) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open URL")
+                                    }
+                                },
+                                isError = addressError != null,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Uri,
+                                    imeAction = ImeAction.Go,
                                 ),
+                                keyboardActions = KeyboardActions(onGo = { navigate() }),
                             )
-                        },
-                        trailingIcon = {
-                            IconButton(onClick = navigate) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Open URL")
+                            IconButton(
+                                onClick = { webView?.reload() ?: navigate() },
+                                enabled = address.isNotBlank(),
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh preview")
                             }
-                        },
-                        isError = addressError != null,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Uri,
-                            imeAction = ImeAction.Go,
-                        ),
-                        keyboardActions = KeyboardActions(onGo = { navigate() }),
-                    )
-                    IconButton(
-                        onClick = { webView?.reload() ?: navigate() },
-                        enabled = address.isNotBlank(),
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh preview")
+                            IconButton(
+                                onClick = onToggleFullscreen,
+                            ) {
+                                Icon(
+                                    imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = if (isFullscreen) "Exit full screen" else "Full screen preview",
+                                )
+                            }
+                        }
+                        if (addressError != null) {
+                            Text(
+                                addressError.orEmpty(),
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 16.dp, top = 3.dp),
+                            )
+                        } else if (loading) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 5.dp))
+                        }
                     }
-                }
-                if (addressError != null) {
-                    Text(
-                        addressError.orEmpty(),
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(start = 16.dp, top = 3.dp),
-                    )
-                } else if (loading) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 5.dp))
                 }
             }
-        }
-        val targetUrl = activeUrl
-        if (targetUrl == null) {
-            EmptyState(Icons.Default.PlayArrow, "Preview not running", "Enter a localhost URL above, or start a local web server in the project Terminal.")
-        } else {
-            AndroidView(
-                factory = { context ->
-                    WebView(context).apply {
-                        webView = this
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                loading = newProgress < 100
-                            }
-                        }
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                val target = request?.url ?: return true
-                                if (!target.isLoopbackPreviewUrl()) {
-                                    addressError = "External navigation is blocked in project preview"
-                                    return true
+            val targetUrl = activeUrl
+            if (targetUrl == null) {
+                EmptyState(Icons.Default.PlayArrow, "Preview not running", "Enter a localhost URL above, or start a local web server in the project Terminal.")
+            } else {
+                AndroidView(
+                    factory = { context ->
+                        WebView(context).apply {
+                            webView = this
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                    loading = newProgress < 100
                                 }
-                                address = target.toString()
-                                return false
                             }
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                    val target = request?.url ?: return true
+                                    if (!target.isLoopbackPreviewUrl()) {
+                                        addressError = "External navigation is blocked in project preview"
+                                        return true
+                                    }
+                                    address = target.toString()
+                                    return false
+                                }
 
-                            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                                val target = request?.url ?: return blockedPreviewResponse()
-                                return if (target.isLoopbackPreviewUrl()) null else blockedPreviewResponse()
+                                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                                    val target = request?.url ?: return blockedPreviewResponse()
+                                    return if (target.isLoopbackPreviewUrl()) null else blockedPreviewResponse()
+                                }
                             }
+                            loadUrl(targetUrl)
                         }
-                        loadUrl(targetUrl)
+                    },
+                    update = { current ->
+                        webView = current
+                        if (current.url != targetUrl) current.loadUrl(targetUrl)
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+
+        // Floating quick action pill for full screen / collapsed URL mode
+        if (activeUrl != null) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+                shadowElevation = 4.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(
+                        onClick = { showUrlBar = !showUrlBar },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (showUrlBar) Icons.Default.KeyboardArrowUp else Icons.Default.Language,
+                            contentDescription = if (showUrlBar) "Hide address bar" else "Show address bar",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
                     }
-                },
-                update = { current ->
-                    webView = current
-                    if (current.url != targetUrl) current.loadUrl(targetUrl)
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
+                    IconButton(
+                        onClick = { webView?.reload() ?: navigate() },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Reload",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    IconButton(
+                        onClick = onToggleFullscreen,
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            contentDescription = if (isFullscreen) "Exit full screen" else "Enter full screen",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
         }
     }
 }
