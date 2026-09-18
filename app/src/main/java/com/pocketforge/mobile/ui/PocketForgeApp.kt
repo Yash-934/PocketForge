@@ -106,6 +106,20 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Warning
+import java.io.File
+import androidx.core.content.FileProvider
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.NoteAdd
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -310,6 +324,21 @@ fun PocketForgeApp(viewModel: MainViewModel = viewModel()) {
             onRemoveAttachment = viewModel::removePendingAttachment,
             onOpenAttachment = viewModel::openChatAttachment,
             onBuildAndRunAndroid = viewModel::buildAndRunAndroidApp,
+            onToggleWorkspaceFileSelection = viewModel::toggleWorkspaceFileSelection,
+            onSelectAllWorkspaceFiles = viewModel::selectAllWorkspaceFiles,
+            onClearWorkspaceFileSelection = viewModel::clearWorkspaceFileSelection,
+            onCopySelectedWorkspaceFiles = viewModel::copySelectedWorkspaceFiles,
+            onCutSelectedWorkspaceFiles = viewModel::cutSelectedWorkspaceFiles,
+            onClearWorkspaceClipboard = viewModel::clearWorkspaceClipboard,
+            onPasteWorkspaceFiles = viewModel::pasteWorkspaceFiles,
+            onDeleteWorkspaceEntries = viewModel::deleteWorkspaceEntries,
+            onRenameWorkspaceEntry = viewModel::renameWorkspaceEntry,
+            onMoveWorkspaceEntries = viewModel::moveWorkspaceEntries,
+            onCreateWorkspaceFile = viewModel::createWorkspaceFile,
+            onCreateWorkspaceFolder = viewModel::createWorkspaceFolder,
+            onExportWorkspaceFile = viewModel::exportWorkspaceFile,
+            onGetWorkspaceFile = viewModel::getWorkspaceFile,
+            onSyncApksToOutputFolder = viewModel::syncApksToOutputFolder,
         )
         else -> RootScreenHost(state, viewModel, projectsListState)
     }
@@ -2173,7 +2202,57 @@ private fun ProjectsScreen(
         topBar = {
             TopAppBar(
                 modifier = Modifier.padding(top = 8.dp),
-                title = { Row(verticalAlignment = Alignment.CenterVertically) { BrandMark(compact = true); Spacer(Modifier.width(9.dp)); Text("PocketForge", fontWeight = FontWeight.Bold) } },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        BrandMark(compact = true)
+                        Spacer(Modifier.width(9.dp))
+                        Column {
+                            Text("PocketForge", fontWeight = FontWeight.Bold)
+                            Text(
+                                text = "CORE // ${state.themeMode.title}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                letterSpacing = 0.5.sp,
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .clickable(onClick = onToggleTheme)
+                            .padding(end = 4.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = state.themeMode.title,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                    IconButton(onClick = onSettings) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
@@ -2185,8 +2264,15 @@ private fun ProjectsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
+                Text(
+                    text = "NEURAL CODING MATRIX",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 1.sp,
+                )
                 Text("Build from your phone", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("Chat, review changes, and preview your project.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Autonomous AI developer, local toolchains, and real-time terminal.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(12.dp))
                 ApiStatusChip(state = state, onSettings = onSettings, onPing = onPing)
                 Spacer(Modifier.height(12.dp))
@@ -2220,17 +2306,20 @@ private fun ProjectsScreen(
                         modifier = Modifier.weight(1f).height(48.dp),
                         shape = RoundedCornerShape(14.dp),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary,
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
                             text = "New project",
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
                             softWrap = false,
                         )
@@ -2253,7 +2342,7 @@ private fun ProjectsScreen(
                         imageVector = Icons.Default.Upload,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
-                        tint = PocketOrange,
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
@@ -2520,22 +2609,85 @@ private fun ProjectCard(project: Project, onOpen: () -> Unit, onRename: (String)
     var showRename by rememberSaveable(project.id) { mutableStateOf(false) }
     var showDelete by rememberSaveable(project.id) { mutableStateOf(false) }
     var renameText by rememberSaveable(project.id) { mutableStateOf(project.name) }
-    Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                Icon(Icons.Default.Folder, null, Modifier.padding(13.dp), tint = PocketOrange)
+    
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val isQuick = project.kind == ProjectKind.QUICK_PROJECT
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.22f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 14.dp, bottom = 14.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = primaryColor.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
+                modifier = Modifier.size(46.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (isQuick) Icons.Default.Chat else Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = primaryColor,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
             }
-            Spacer(Modifier.width(13.dp))
-            Column(Modifier.weight(1f)) {
-                Text(project.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = project.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = primaryColor.copy(alpha = 0.14f),
+                    ) {
+                        Text(
+                            text = if (isQuick) "QUICK CORE" else "FORGE UNIT",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Black,
+                            color = primaryColor,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                            letterSpacing = 0.4.sp,
+                        )
+                    }
+                }
                 Text(
-                    if (project.kind == ProjectKind.QUICK_PROJECT) "Quick project" else project.description,
+                    text = if (isQuick) "Interactive autonomous workspace" else project.description.ifBlank { "Local development workspace" },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                     maxLines = 1,
                 )
-                Text("/workspace/${project.slug}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("${project.language} · ${project.formattedUpdatedAt}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(4.dp).background(primaryColor, CircleShape))
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = "/workspace/${project.slug}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "· ${project.language} · ${project.formattedUpdatedAt}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        fontSize = 10.sp,
+                    )
+                }
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "Project options") }
@@ -2609,11 +2761,37 @@ private fun WorkspaceScreen(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onBuildAndRunAndroid: () -> Unit,
+    onToggleWorkspaceFileSelection: (String) -> Unit,
+    onSelectAllWorkspaceFiles: (List<String>) -> Unit,
+    onClearWorkspaceFileSelection: () -> Unit,
+    onCopySelectedWorkspaceFiles: (List<String>) -> Unit,
+    onCutSelectedWorkspaceFiles: (List<String>) -> Unit,
+    onClearWorkspaceClipboard: () -> Unit,
+    onPasteWorkspaceFiles: (String) -> Unit,
+    onDeleteWorkspaceEntries: (List<String>) -> Unit,
+    onRenameWorkspaceEntry: (String, String) -> Unit,
+    onMoveWorkspaceEntries: (List<String>, String) -> Unit,
+    onCreateWorkspaceFile: (String, String) -> Unit,
+    onCreateWorkspaceFolder: (String, String) -> Unit,
+    onExportWorkspaceFile: (String, Uri) -> Unit,
+    onGetWorkspaceFile: (String) -> File?,
+    onSyncApksToOutputFolder: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
     val isAndroidProject = state.androidProjectDetected
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var pendingExportFileRelPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val saveFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*"),
+        onResult = { uri ->
+            val relPath = pendingExportFileRelPath
+            if (uri != null && relPath != null) {
+                onExportWorkspaceFile(relPath, uri)
+            }
+            pendingExportFileRelPath = null
+        },
+    )
     val exportProjectLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
         onResult = { uri -> if (uri != null) onExportProject(uri) },
@@ -2846,6 +3024,9 @@ private fun WorkspaceScreen(
                 )
                 WorkspaceTab.FILES -> FilesTab(
                     files = state.workspaceFiles,
+                    selectedPaths = state.selectedWorkspacePaths,
+                    clipboard = state.workspaceClipboard,
+                    detectedApkOutputs = state.detectedApkOutputs,
                     loading = state.filesLoading,
                     suggestedProjectRoot = state.suggestedProjectRoot,
                     onRefresh = onRefreshFiles,
@@ -2860,6 +3041,63 @@ private fun WorkspaceScreen(
                     onUploadFiles = {
                         uploadFilesLauncher.launch(arrayOf("*/*"))
                     },
+                    onToggleSelection = onToggleWorkspaceFileSelection,
+                    onSelectAll = onSelectAllWorkspaceFiles,
+                    onClearSelection = onClearWorkspaceFileSelection,
+                    onCopySelected = onCopySelectedWorkspaceFiles,
+                    onCutSelected = onCutSelectedWorkspaceFiles,
+                    onClearClipboard = onClearWorkspaceClipboard,
+                    onPaste = onPasteWorkspaceFiles,
+                    onDelete = onDeleteWorkspaceEntries,
+                    onRename = onRenameWorkspaceEntry,
+                    onMove = onMoveWorkspaceEntries,
+                    onCreateFile = onCreateWorkspaceFile,
+                    onCreateFolder = onCreateWorkspaceFolder,
+                    onDownloadFile = { relPath ->
+                        pendingExportFileRelPath = relPath
+                        val fileName = relPath.substringAfterLast('/')
+                        saveFileLauncher.launch(fileName)
+                    },
+                    onShareFile = { relPath ->
+                        val file = onGetWorkspaceFile(relPath)
+                        if (file != null && file.exists()) {
+                            runCatching {
+                                val contentUri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    file,
+                                )
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "*/*"
+                                    putExtra(Intent.EXTRA_STREAM, contentUri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Share ${file.name}"))
+                            }.onFailure { error ->
+                                Toast.makeText(context, "Share error: ${error.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onInstallApk = { relPath ->
+                        val file = onGetWorkspaceFile(relPath)
+                        if (file != null && file.exists()) {
+                            runCatching {
+                                val contentUri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    file,
+                                )
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(contentUri, "application/vnd.android.package-archive")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            }.onFailure { error ->
+                                Toast.makeText(context, "Install error: ${error.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onSyncApksToOutput = onSyncApksToOutputFolder,
                 )
                 WorkspaceTab.TERMINAL -> TerminalScreen(
                     lines = state.projectTerminalLines,
@@ -3056,9 +3294,13 @@ private fun FileViewerScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun FilesTab(
     files: List<WorkspaceEntry>,
+    selectedPaths: Set<String>,
+    clipboard: com.pocketforge.mobile.ui.WorkspaceClipboard?,
+    detectedApkOutputs: List<WorkspaceEntry>,
     loading: Boolean,
     suggestedProjectRoot: String?,
     onRefresh: () -> Unit,
@@ -3067,90 +3309,543 @@ private fun FilesTab(
     onExport: () -> Unit,
     onUploadZip: () -> Unit,
     onUploadFiles: () -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onSelectAll: (List<String>) -> Unit,
+    onClearSelection: () -> Unit,
+    onCopySelected: (List<String>) -> Unit,
+    onCutSelected: (List<String>) -> Unit,
+    onClearClipboard: () -> Unit,
+    onPaste: (String) -> Unit,
+    onDelete: (List<String>) -> Unit,
+    onRename: (String, String) -> Unit,
+    onMove: (List<String>, String) -> Unit,
+    onCreateFile: (String, String) -> Unit,
+    onCreateFolder: (String, String) -> Unit,
+    onDownloadFile: (String) -> Unit,
+    onShareFile: (String) -> Unit,
+    onInstallApk: (String) -> Unit,
+    onSyncApksToOutput: () -> Unit,
 ) {
     var expandedDirectories by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var uploadMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var isSelectionMode by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    // Dialog states
+    var renameTarget by remember { mutableStateOf<WorkspaceEntry?>(null) }
+    var deleteTargets by remember { mutableStateOf<List<String>?>(null) }
+    var newFileDialogDir by remember { mutableStateOf<String?>(null) }
+    var isNewFileDialogOpen by remember { mutableStateOf(false) }
+    var newFolderDialogDir by remember { mutableStateOf<String?>(null) }
+    var isNewFolderDialogOpen by remember { mutableStateOf(false) }
+    var moveTargets by remember { mutableStateOf<List<String>?>(null) }
+
     LaunchedEffect(files.map { it.path }) {
         val directories = files.asSequence().filter { it.isDirectory }.map { it.path }.toSet()
         expandedDirectories = expandedDirectories.filter { it in directories }
     }
+
     val expandedSet = expandedDirectories.toSet()
-    val visibleFiles = files.filter { entry ->
-        val segments = entry.path.split('/')
-        segments.size == 1 || (1 until segments.size).all { depth ->
-            segments.take(depth).joinToString("/") in expandedSet
+    val allDirectories = remember(files) {
+        files.filter { it.isDirectory }.map { it.path }
+    }
+
+    val visibleFiles = remember(files, expandedSet, searchQuery) {
+        if (searchQuery.isNotBlank()) {
+            files.filter { it.name.contains(searchQuery.trim(), ignoreCase = true) || it.path.contains(searchQuery.trim(), ignoreCase = true) }
+        } else {
+            files.filter { entry ->
+                val segments = entry.path.split('/')
+                segments.size == 1 || (1 until segments.size).all { depth ->
+                    segments.take(depth).joinToString("/") in expandedSet
+                }
+            }
         }
     }
-    val directChildCounts = files.filter { candidate ->
-        candidate.path.contains('/')
-    }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
 
-    LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        item {
+    val directChildCounts = remember(files) {
+        files.filter { candidate -> candidate.path.contains('/') }
+            .groupingBy { candidate -> candidate.path.substringBeforeLast('/') }
+            .eachCount()
+    }
+
+    val apkOutputs = remember(detectedApkOutputs, files) {
+        val combined = (detectedApkOutputs + files.filter { it.name.endsWith(".apk", ignoreCase = true) || it.name.endsWith(".aab", ignoreCase = true) })
+            .distinctBy { it.path }
+        combined
+    }
+
+    // Auto-exit selection mode if no items selected and user clicks outside
+    val isAnySelected = selectedPaths.isNotEmpty()
+
+    LazyColumn(
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        // CYBER TOP HUD / FILE EXPLORER HEADER
+        item(key = "file-explorer-header") {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                ),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Files",
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (expandedDirectories.isNotEmpty()) {
-                        TextButton(onClick = { expandedDirectories = emptyList() }) {
-                            Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(3.dp))
-                            Text("Collapse all", fontSize = 11.sp)
-                        }
-                    }
-                    Box {
-                        IconButton(onClick = { uploadMenuOpen = true }) {
-                            Icon(Icons.Default.Upload, "Upload files or ZIP archive")
-                        }
-                        DropdownMenu(
-                            expanded = uploadMenuOpen,
-                            onDismissRequest = { uploadMenuOpen = false },
+                Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                            modifier = Modifier.size(34.dp),
                         ) {
-                            DropdownMenuItem(
-                                text = { Text("Upload project ZIP") },
-                                leadingIcon = { Icon(Icons.Default.Folder, null, tint = PocketOrange) },
-                                onClick = {
-                                    uploadMenuOpen = false
-                                    onUploadZip()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Upload individual files") },
-                                leadingIcon = { Icon(Icons.Default.Description, null) },
-                                onClick = {
-                                    uploadMenuOpen = false
-                                    onUploadFiles()
-                                },
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.Folder,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    "WORKSPACE FILES",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.8.sp,
+                                )
+                                Text(
+                                    "[${files.size}]",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                            Text(
+                                if (isSelectionMode) "${selectedPaths.size} of ${files.size} selected" else "Full file system explorer & APK manager",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+
+                        // Toggle Select Mode
+                        IconButton(
+                            onClick = {
+                                isSelectionMode = !isSelectionMode
+                                if (!isSelectionMode) onClearSelection()
+                            },
+                        ) {
+                            Icon(
+                                if (isSelectionMode) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                contentDescription = "Toggle multi-select mode",
+                                tint = if (isSelectionMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        // Upload Menu
+                        Box {
+                            IconButton(onClick = { uploadMenuOpen = true }) {
+                                Icon(Icons.Default.Upload, "Upload files or ZIP archive")
+                            }
+                            DropdownMenu(
+                                expanded = uploadMenuOpen,
+                                onDismissRequest = { uploadMenuOpen = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Upload project ZIP") },
+                                    leadingIcon = { Icon(Icons.Default.Folder, null, tint = PocketOrange) },
+                                    onClick = {
+                                        uploadMenuOpen = false
+                                        onUploadZip()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Upload individual files") },
+                                    leadingIcon = { Icon(Icons.Default.Description, null, tint = MaterialTheme.colorScheme.primary) },
+                                    onClick = {
+                                        uploadMenuOpen = false
+                                        onUploadFiles()
+                                    },
+                                )
+                            }
+                        }
+
+                        // Refresh
+                        if (loading) {
+                            CircularProgressIndicator(Modifier.padding(8.dp).size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            IconButton(onClick = onRefresh) {
+                                Icon(Icons.Default.Refresh, "Refresh files")
+                            }
+                        }
                     }
-                    if (!loading && files.any { !it.isDirectory }) {
-                        IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
+
+                    // SEARCH & QUICK ACTION BUTTONS ROW
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Filter files…", fontSize = 12.sp) },
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(16.dp)) },
+                            trailingIcon = if (searchQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { searchQuery = "" }, Modifier.size(24.dp)) {
+                                        Icon(Icons.Default.Close, null, Modifier.size(14.dp))
+                                    }
+                                }
+                            } else null,
+                            textStyle = TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).height(46.dp),
+                        )
+
+                        // + New File
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                            modifier = Modifier.clickable {
+                                newFileDialogDir = ""
+                                isNewFileDialogOpen = true
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(Icons.Default.NoteAdd, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                Text("+ File", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        // + New Folder
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                            modifier = Modifier.clickable {
+                                newFolderDialogDir = ""
+                                isNewFolderDialogOpen = true
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(Icons.Default.CreateNewFolder, null, Modifier.size(16.dp), tint = PocketOrange)
+                                Text("+ Folder", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
-                    if (loading) {
-                        CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
+
+                    // MULTI-SELECT ACTIONS BAR
+                    if (isSelectionMode || isAnySelected) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    // Select All
+                                    TextButton(
+                                        onClick = {
+                                            if (selectedPaths.size == visibleFiles.size && visibleFiles.isNotEmpty()) {
+                                                onClearSelection()
+                                            } else {
+                                                onSelectAll(visibleFiles.map { it.path })
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    ) {
+                                        Icon(Icons.Default.SelectAll, null, Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(if (selectedPaths.size == visibleFiles.size && visibleFiles.isNotEmpty()) "Deselect" else "Select All", fontSize = 11.sp)
+                                    }
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    // Copy
+                                    IconButton(
+                                        onClick = { onCopySelected(selectedPaths.toList()) },
+                                        enabled = isAnySelected,
+                                        modifier = Modifier.size(34.dp),
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, "Copy selected", Modifier.size(16.dp), tint = if (isAnySelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                    }
+
+                                    // Cut / Move
+                                    IconButton(
+                                        onClick = { onCutSelected(selectedPaths.toList()) },
+                                        enabled = isAnySelected,
+                                        modifier = Modifier.size(34.dp),
+                                    ) {
+                                        Icon(Icons.Default.ContentCut, "Cut selected", Modifier.size(16.dp), tint = if (isAnySelected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                    }
+
+                                    // Move To
+                                    IconButton(
+                                        onClick = { moveTargets = selectedPaths.toList() },
+                                        enabled = isAnySelected,
+                                        modifier = Modifier.size(34.dp),
+                                    ) {
+                                        Icon(Icons.Default.DriveFileMove, "Move selected", Modifier.size(16.dp), tint = if (isAnySelected) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                    }
+
+                                    // Delete
+                                    IconButton(
+                                        onClick = { deleteTargets = selectedPaths.toList() },
+                                        enabled = isAnySelected,
+                                        modifier = Modifier.size(34.dp),
+                                    ) {
+                                        Icon(Icons.Default.Delete, "Delete selected", Modifier.size(16.dp), tint = if (isAnySelected) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ACTIVE CLIPBOARD STATUS BAR
+                    if (clipboard != null && clipboard.sourcePaths.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = PocketGreen.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, PocketGreen.copy(alpha = 0.4f)),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Icon(Icons.Default.ContentPaste, null, tint = PocketGreen, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        "${clipboard.sourcePaths.size} item(s) in clipboard (${if (clipboard.isCut) "Cut" else "Copy"})",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = PocketGreen,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(
+                                        onClick = { onPaste("") },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    ) {
+                                        Text("Paste to Root", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = PocketGreen)
+                                    }
+                                    IconButton(onClick = onClearClipboard, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Clear, "Clear clipboard", Modifier.size(14.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Expand / Collapse Folders Row
+                    if (expandedDirectories.isNotEmpty()) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(
+                                onClick = { expandedDirectories = emptyList() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(14.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text("Collapse all folders", fontSize = 11.sp)
+                            }
+                        }
                     }
                 }
             }
-            Spacer(Modifier.height(12.dp))
         }
+
+        // GENERATED BUILD ARTIFACTS / APK OUTPUTS CARD
+        if (apkOutputs.isNotEmpty()) {
+            item(key = "apk-build-outputs-banner") {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF0F172A),
+                    border = BorderStroke(1.5.dp, Color(0xFF10B981).copy(alpha = 0.7f)),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFF10B981).copy(alpha = 0.2f),
+                                border = BorderStroke(1.dp, Color(0xFF10B981)),
+                                modifier = Modifier.size(34.dp),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Android,
+                                        contentDescription = null,
+                                        tint = Color(0xFF10B981),
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "BUILD ARTIFACTS / APK OUTPUTS",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = Color(0xFF10B981),
+                                    letterSpacing = 0.8.sp,
+                                )
+                                Text(
+                                    "${apkOutputs.size} Android package binary detected",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF94A3B8),
+                                )
+                            }
+                            // Save all to /output folder button
+                            Button(
+                                onClick = onSyncApksToOutput,
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF059669),
+                                    contentColor = Color.White,
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.height(34.dp),
+                            ) {
+                                Icon(Icons.Default.Download, null, Modifier.size(14.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Save to /output", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        HorizontalDivider(color = Color(0xFF10B981).copy(alpha = 0.25f))
+
+                        // List each APK item
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            apkOutputs.forEach { apk ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, Color(0xFF334155)),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Android,
+                                                null,
+                                                tint = Color(0xFF10B981),
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    apk.name,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    color = Color(0xFFF8FAFC),
+                                                    fontFamily = FontFamily.Monospace,
+                                                )
+                                                Text(
+                                                    "${apk.path} · ${formatFileSize(apk.sizeBytes)}",
+                                                    fontSize = 11.sp,
+                                                    color = Color(0xFF64748B),
+                                                    fontFamily = FontFamily.Monospace,
+                                                )
+                                            }
+                                        }
+
+                                        // Action buttons for this APK
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            // Download / Save As button
+                                            Button(
+                                                onClick = { onDownloadFile(apk.path) },
+                                                modifier = Modifier.weight(1f).height(32.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = Color(0xFF0284C7),
+                                                    contentColor = Color.White,
+                                                ),
+                                                contentPadding = PaddingValues(horizontal = 6.dp),
+                                            ) {
+                                                Icon(Icons.Default.Download, null, Modifier.size(13.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Save APK", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                            }
+
+                                            // Install button
+                                            Button(
+                                                onClick = { onInstallApk(apk.path) },
+                                                modifier = Modifier.weight(1f).height(32.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = Color(0xFF10B981),
+                                                    contentColor = Color.White,
+                                                ),
+                                                contentPadding = PaddingValues(horizontal = 6.dp),
+                                            ) {
+                                                Icon(Icons.Default.PlayArrow, null, Modifier.size(13.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Install", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                            }
+
+                                            // Share button
+                                            OutlinedButton(
+                                                onClick = { onShareFile(apk.path) },
+                                                modifier = Modifier.height(32.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp),
+                                            ) {
+                                                Icon(Icons.Default.Share, "Share", Modifier.size(13.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // SUGGESTED PROJECT ROOT CARD
         if (suggestedProjectRoot != null) {
             item(key = "suggested-project-root") {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
@@ -3167,20 +3862,18 @@ private fun FilesTab(
                 }
             }
         }
+
+        // EMPTY STATE
         if (!loading && files.isEmpty()) {
-            item {
+            item(key = "empty-files-placeholder") {
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                     shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(28.dp),
+                        modifier = Modifier.fillMaxWidth().padding(28.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -3200,13 +3893,13 @@ private fun FilesTab(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "No files in project yet",
+                            "No files in workspace yet",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center,
                         )
                         Text(
-                            "Upload an existing project ZIP or add files to start coding, or ask Claude Code in Chat.",
+                            "Upload an existing project ZIP, add files, or ask Claude Code to start developing.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -3240,61 +3933,541 @@ private fun FilesTab(
                 }
             }
         }
+
+        // WORKSPACE FILE ITEMS
         items(visibleFiles, key = { it.path }) { entry ->
-            Row(
-                Modifier
+            val isSelected = entry.path in selectedPaths
+            var itemMenuOpen by remember { mutableStateOf(false) }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                } else {
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (isSelected) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
+                    },
+                ),
+                modifier = Modifier
                     .fillMaxWidth()
-                    .clickable {
-                        if (entry.isDirectory) {
-                            expandedDirectories = if (entry.path in expandedSet) {
-                                expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
-                            } else {
-                                expandedDirectories + entry.path
-                            }
-                        } else {
-                            onOpenFile(entry)
+                    .padding(start = (if (searchQuery.isNotBlank()) 0 else entry.depth * 14).dp),
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = {
+                                if (isSelectionMode) {
+                                    onToggleSelection(entry.path)
+                                } else if (entry.isDirectory) {
+                                    expandedDirectories = if (entry.path in expandedSet) {
+                                        expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
+                                    } else {
+                                        expandedDirectories + entry.path
+                                    }
+                                } else {
+                                    onOpenFile(entry)
+                                }
+                            },
+                            onLongClick = {
+                                isSelectionMode = true
+                                onToggleSelection(entry.path)
+                            },
+                        )
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Checkbox in selection mode
+                    if (isSelectionMode) {
+                        Checkbox(
+                            checked = isSelected,
+                            onCheckedChange = { onToggleSelection(entry.path) },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = MaterialTheme.colorScheme.primary,
+                            ),
+                            modifier = Modifier.size(32.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
+
+                    // Directory expand/collapse indicator
+                    if (entry.isDirectory) {
+                        Icon(
+                            if (entry.path in expandedSet) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            if (entry.path in expandedSet) "Collapse folder" else "Expand folder",
+                            Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
+
+                    // Icon with file-type cyberpunk color tint
+                    val fileIcon = getWorkspaceEntryIcon(entry)
+                    val fileTint = getWorkspaceEntryTint(entry)
+                    Icon(
+                        fileIcon,
+                        null,
+                        tint = fileTint,
+                        modifier = Modifier.size(18.dp),
+                    )
+
+                    Spacer(Modifier.width(8.dp))
+
+                    // Name and info
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = if (entry.isDirectory) "${entry.name} (${directChildCounts[entry.path] ?: 0})" else entry.name,
+                            fontWeight = if (entry.isDirectory || isSelected) FontWeight.Bold else FontWeight.Normal,
+                            fontSize = 13.sp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (!entry.isDirectory) {
+                            Text(
+                                formatFileSize(entry.sizeBytes),
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                            )
                         }
                     }
-                    .padding(start = (entry.depth * 20).dp)
-                    .padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (entry.isDirectory) {
-                    Icon(
-                        if (entry.path in expandedSet) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        if (entry.path in expandedSet) "Collapse folder" else "Expand folder",
-                        Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(5.dp))
+
+                    // 3-DOT CONTEXT MENU
+                    Box {
+                        IconButton(
+                            onClick = { itemMenuOpen = true },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                "Options for ${entry.name}",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = itemMenuOpen,
+                            onDismissRequest = { itemMenuOpen = false },
+                        ) {
+                            // Open File
+                            if (!entry.isDirectory) {
+                                DropdownMenuItem(
+                                    text = { Text("Open file") },
+                                    leadingIcon = { Icon(Icons.Default.Code, null, tint = MaterialTheme.colorScheme.primary) },
+                                    onClick = {
+                                        itemMenuOpen = false
+                                        onOpenFile(entry)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Download / Save to Device") },
+                                    leadingIcon = { Icon(Icons.Default.Download, null, tint = PocketGreen) },
+                                    onClick = {
+                                        itemMenuOpen = false
+                                        onDownloadFile(entry.path)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share file") },
+                                    leadingIcon = { Icon(Icons.Default.Share, null) },
+                                    onClick = {
+                                        itemMenuOpen = false
+                                        onShareFile(entry.path)
+                                    },
+                                )
+                                if (entry.name.endsWith(".apk", ignoreCase = true)) {
+                                    DropdownMenuItem(
+                                        text = { Text("Install APK") },
+                                        leadingIcon = { Icon(Icons.Default.Android, null, tint = Color(0xFF10B981)) },
+                                        onClick = {
+                                            itemMenuOpen = false
+                                            onInstallApk(entry.path)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Copy to /output folder") },
+                                        leadingIcon = { Icon(Icons.Default.Folder, null, tint = PocketOrange) },
+                                        onClick = {
+                                            itemMenuOpen = false
+                                            onSyncApksToOutput()
+                                        },
+                                    )
+                                }
+                            }
+
+                            // Directory specific: New File / New Folder inside / Paste
+                            if (entry.isDirectory) {
+                                DropdownMenuItem(
+                                    text = { Text("New file inside") },
+                                    leadingIcon = { Icon(Icons.Default.NoteAdd, null, tint = MaterialTheme.colorScheme.primary) },
+                                    onClick = {
+                                        itemMenuOpen = false
+                                        newFileDialogDir = entry.path
+                                        isNewFileDialogOpen = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("New folder inside") },
+                                    leadingIcon = { Icon(Icons.Default.CreateNewFolder, null, tint = PocketOrange) },
+                                    onClick = {
+                                        itemMenuOpen = false
+                                        newFolderDialogDir = entry.path
+                                        isNewFolderDialogOpen = true
+                                    },
+                                )
+                                if (clipboard != null && clipboard.sourcePaths.isNotEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Paste (${clipboard.sourcePaths.size}) here") },
+                                        leadingIcon = { Icon(Icons.Default.ContentPaste, null, tint = PocketGreen) },
+                                        onClick = {
+                                            itemMenuOpen = false
+                                            onPaste(entry.path)
+                                        },
+                                    )
+                                }
+                            }
+
+                            HorizontalDivider()
+
+                            // Rename
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                leadingIcon = { Icon(Icons.Default.Edit, null) },
+                                onClick = {
+                                    itemMenuOpen = false
+                                    renameTarget = entry
+                                },
+                            )
+
+                            // Copy
+                            DropdownMenuItem(
+                                text = { Text("Copy") },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                                onClick = {
+                                    itemMenuOpen = false
+                                    onCopySelected(listOf(entry.path))
+                                },
+                            )
+
+                            // Cut / Move
+                            DropdownMenuItem(
+                                text = { Text("Cut") },
+                                leadingIcon = { Icon(Icons.Default.ContentCut, null) },
+                                onClick = {
+                                    itemMenuOpen = false
+                                    onCutSelected(listOf(entry.path))
+                                },
+                            )
+
+                            // Move to...
+                            DropdownMenuItem(
+                                text = { Text("Move to...") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileMove, null) },
+                                onClick = {
+                                    itemMenuOpen = false
+                                    moveTargets = listOf(entry.path)
+                                },
+                            )
+
+                            HorizontalDivider()
+
+                            // Delete
+                            DropdownMenuItem(
+                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    itemMenuOpen = false
+                                    deleteTargets = listOf(entry.path)
+                                },
+                            )
+                        }
+                    }
                 }
-                Icon(
-                    if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
-                    null,
-                    tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(11.dp))
-                Text(
-                    if (entry.isDirectory) "${entry.name} (${directChildCounts[entry.path] ?: 0})" else entry.name,
-                    Modifier.weight(1f),
-                    color = if (!entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                )
-                if (!entry.isDirectory) {
-                    Spacer(Modifier.width(8.dp))
-                    Text(formatFileSize(entry.sizeBytes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(4.dp))
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (!entry.isDirectory) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), modifier = Modifier.padding(start = (entry.depth * 20 + 42).dp))
             }
         }
+    }
+
+    // RENAME DIALOG
+    renameTarget?.let { entry ->
+        var newName by remember(entry) { mutableStateOf(entry.name) }
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename ${if (entry.isDirectory) "Folder" else "File"}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Enter a new name for ${entry.name}:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(fontSize = 13.sp, fontFamily = FontFamily.Monospace),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newName.isNotBlank() && newName.trim() != entry.name) {
+                            onRename(entry.path, newName.trim())
+                        }
+                        renameTarget = null
+                    },
+                    enabled = newName.isNotBlank() && newName.trim() != entry.name,
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // NEW FILE DIALOG
+    if (isNewFileDialogOpen) {
+        var newFileName by remember { mutableStateOf("") }
+        val targetDir = newFileDialogDir ?: ""
+        AlertDialog(
+            onDismissRequest = { isNewFileDialogOpen = false },
+            title = { Text("Create New File") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        if (targetDir.isBlank()) "Location: Workspace Root (/)" else "Location: /$targetDir",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    OutlinedTextField(
+                        value = newFileName,
+                        onValueChange = { newFileName = it },
+                        placeholder = { Text("e.g. MainActivity.kt, build.gradle", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(fontSize = 13.sp, fontFamily = FontFamily.Monospace),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newFileName.isNotBlank()) {
+                            onCreateFile(targetDir, newFileName.trim())
+                        }
+                        isNewFileDialogOpen = false
+                    },
+                    enabled = newFileName.isNotBlank(),
+                ) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { isNewFileDialogOpen = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // NEW FOLDER DIALOG
+    if (isNewFolderDialogOpen) {
+        var newFolderName by remember { mutableStateOf("") }
+        val targetDir = newFolderDialogDir ?: ""
+        AlertDialog(
+            onDismissRequest = { isNewFolderDialogOpen = false },
+            title = { Text("Create New Folder") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        if (targetDir.isBlank()) "Location: Workspace Root (/)" else "Location: /$targetDir",
+                        fontSize = 11.sp,
+                        color = PocketOrange,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    OutlinedTextField(
+                        value = newFolderName,
+                        onValueChange = { newFolderName = it },
+                        placeholder = { Text("e.g. output, src, components", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(fontSize = 13.sp, fontFamily = FontFamily.Monospace),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newFolderName.isNotBlank()) {
+                            onCreateFolder(targetDir, newFolderName.trim())
+                        }
+                        isNewFolderDialogOpen = false
+                    },
+                    enabled = newFolderName.isNotBlank(),
+                ) {
+                    Text("Create Folder")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { isNewFolderDialogOpen = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // DELETE CONFIRMATION DIALOG
+    deleteTargets?.let { targets ->
+        AlertDialog(
+            onDismissRequest = { deleteTargets = null },
+            title = { Text("Delete ${if (targets.size == 1) targets.first().substringAfterLast('/') else "${targets.size} items"}?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Are you sure you want to permanently delete these items from the workspace?",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            targets.take(5).forEach { path ->
+                                Text(
+                                    "• $path",
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (targets.size > 5) {
+                                Text("+ ${targets.size - 5} more items…", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDelete(targets)
+                        deleteTargets = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete Permanently")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTargets = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // MOVE DESTINATION PICKER DIALOG
+    moveTargets?.let { targets ->
+        var selectedDestination by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { moveTargets = null },
+            title = { Text("Move ${targets.size} item(s) to...") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Select destination directory:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp),
+                    ) {
+                        LazyColumn(contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            item {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (selectedDestination == "") MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.Transparent,
+                                    modifier = Modifier.fillMaxWidth().clickable { selectedDestination = "" },
+                                ) {
+                                    Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Folder, null, tint = PocketOrange, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("/ (Workspace Root)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                            items(allDirectories) { dir ->
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (selectedDestination == dir) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.Transparent,
+                                    modifier = Modifier.fillMaxWidth().clickable { selectedDestination = dir },
+                                ) {
+                                    Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Folder, null, tint = PocketOrange, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("/$dir", fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onMove(targets, selectedDestination)
+                        moveTargets = null
+                    },
+                ) {
+                    Text("Move Here")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { moveTargets = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+private fun getWorkspaceEntryIcon(entry: WorkspaceEntry): ImageVector {
+    if (entry.isDirectory) return Icons.Default.Folder
+    val lower = entry.name.lowercase()
+    return when {
+        lower.endsWith(".apk") || lower.endsWith(".aab") -> Icons.Default.Android
+        lower.endsWith(".kt") || lower.endsWith(".java") || lower.endsWith(".ts") || lower.endsWith(".js") || lower.endsWith(".py") || lower.endsWith(".rs") || lower.endsWith(".c") || lower.endsWith(".cpp") -> Icons.Default.Code
+        lower.endsWith(".json") || lower.endsWith(".xml") || lower.endsWith(".yaml") || lower.endsWith(".yml") || lower.endsWith(".toml") -> Icons.Default.Storage
+        lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.endsWith(".svg") || lower.endsWith(".gif") -> Icons.Default.Image
+        lower.endsWith(".zip") || lower.endsWith(".tar") || lower.endsWith(".gz") || lower.endsWith(".rar") -> Icons.Default.Folder
+        else -> Icons.Default.Description
+    }
+}
+
+@Composable
+private fun getWorkspaceEntryTint(entry: WorkspaceEntry): Color {
+    if (entry.isDirectory) return PocketOrange
+    val lower = entry.name.lowercase()
+    return when {
+        lower.endsWith(".apk") || lower.endsWith(".aab") -> Color(0xFF10B981)
+        lower.endsWith(".kt") || lower.endsWith(".java") -> Color(0xFF38BDF8)
+        lower.endsWith(".gradle") || lower.endsWith(".kts") || lower.endsWith(".toml") -> Color(0xFF34D399)
+        lower.endsWith(".json") || lower.endsWith(".xml") -> Color(0xFFFBBF24)
+        lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".svg") -> Color(0xFFF472B6)
+        lower.endsWith(".zip") || lower.endsWith(".tar") || lower.endsWith(".gz") -> Color(0xFFFB923C)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 }
 
@@ -3946,42 +5119,6 @@ private fun ApprovalCard(request: ToolRequest, onApproval: (Boolean) -> Unit) {
     }
 }
 
-@Composable
-private fun FilesTab(files: List<WorkspaceEntry>, loading: Boolean, onRefresh: () -> Unit) {
-    LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Project files", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                if (loading) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                } else {
-                    IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-        if (!loading && files.isEmpty()) {
-            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask Claude Code to create something in this project.") }
-        }
-        items(files, key = { it.path }) { entry ->
-            Row(
-                Modifier.fillMaxWidth().padding(start = (entry.depth * 20).dp).padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
-                    null,
-                    tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(11.dp))
-                Text(entry.name, Modifier.weight(1f))
-                if (!entry.isDirectory) {
-                    Text(formatFileSize(entry.sizeBytes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
-}
 
 private fun formatFileSize(bytes: Long): String = when {
     bytes < 1_024 -> "$bytes B"
@@ -4274,30 +5411,24 @@ private fun EmptyState(icon: ImageVector, title: String, body: String) {
 
 @Composable
 private fun BrandMark(modifier: Modifier = Modifier, compact: Boolean = false) {
-    val size = if (compact) 32.dp else 50.dp
-    val iconSize = if (compact) 17.dp else 24.dp
-    val cornerRadius = if (compact) 9.dp else 14.dp
+    val size = if (compact) 34.dp else 52.dp
+    val iconSize = if (compact) 18.dp else 26.dp
+    val cornerRadius = if (compact) 10.dp else 16.dp
     val primary = MaterialTheme.colorScheme.primary
 
-    Box(
-        modifier = modifier
-            .size(size)
-            .background(
-                color = primary.copy(alpha = 0.12f),
-                shape = RoundedCornerShape(cornerRadius),
-            )
-            .border(
-                width = 1.dp,
-                color = primary.copy(alpha = 0.32f),
-                shape = RoundedCornerShape(cornerRadius),
-            ),
-        contentAlignment = Alignment.Center,
+    Surface(
+        modifier = modifier.size(size),
+        shape = RoundedCornerShape(cornerRadius),
+        color = primary.copy(alpha = 0.14f),
+        border = BorderStroke(1.2.dp, primary.copy(alpha = 0.55f)),
     ) {
-        Icon(
-            imageVector = Icons.Default.Terminal,
-            contentDescription = "PocketForge",
-            modifier = Modifier.size(iconSize),
-            tint = primary,
-        )
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = Icons.Default.Terminal,
+                contentDescription = "PocketForge",
+                modifier = Modifier.size(iconSize),
+                tint = primary,
+            )
+        }
     }
 }

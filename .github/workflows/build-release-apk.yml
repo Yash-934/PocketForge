@@ -1,0 +1,206 @@
+name: Build and Release Android APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - 'release/**'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'App Version Name (e.g., 1.1.0)'
+        required: false
+        default: '1.1.0'
+        type: string
+      version_code:
+        description: 'App Version Code (e.g., 5)'
+        required: false
+        default: '5'
+        type: string
+      play_build:
+        description: 'Build Google Play Target SDK 36 (true/false)'
+        required: false
+        default: false
+        type: boolean
+      create_github_release:
+        description: 'Create a GitHub Release with APK & AAB'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build Signed Release APK & Bundle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Ensure Native Submodules
+        run: |
+          mkdir -p third_party
+          if [ ! -f third_party/proot/src/cli/proot.c ]; then
+            echo "Cloning proot..."
+            rm -rf third_party/proot
+            git clone --depth 1 https://github.com/termux/proot.git third_party/proot
+          fi
+          if [ ! -f third_party/libandroid-shmem/shmem.c ]; then
+            echo "Cloning libandroid-shmem..."
+            rm -rf third_party/libandroid-shmem
+            git clone --depth 1 https://github.com/termux/libandroid-shmem.git third_party/libandroid-shmem
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK, NDK, and CMake
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/cmdline-tools/16.0/bin:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools:$PATH"
+          echo "Accepting SDK licenses..."
+          yes | sdkmanager --licenses || true
+          echo "Installing NDK and CMake..."
+          yes | sdkmanager "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Setup Release Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.MH_UPLOAD_STORE_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.MH_UPLOAD_STORE_PASSWORD || 'pocketforge' }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.MH_UPLOAD_KEY_ALIAS || 'pocketforge' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.MH_UPLOAD_KEY_PASSWORD || 'pocketforge' }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Decoding release keystore from secrets..."
+            echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+            echo "STORE_FILE=release.keystore" >> $GITHUB_ENV
+            echo "STORE_PASS=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASS=$KEY_PASSWORD" >> $GITHUB_ENV
+          else
+            echo "Generating self-signed release keystore for CI build..."
+            keytool -genkeypair -v \
+              -keystore release.keystore \
+              -alias pocketforge \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass pocketforge \
+              -keypass pocketforge \
+              -dname "CN=PocketForge,O=PocketForge,C=IN"
+            echo "STORE_FILE=release.keystore" >> $GITHUB_ENV
+            echo "STORE_PASS=pocketforge" >> $GITHUB_ENV
+            echo "ALIAS=pocketforge" >> $GITHUB_ENV
+            echo "KEY_PASS=pocketforge" >> $GITHUB_ENV
+          fi
+
+      - name: Determine Versioning
+        id: versioning
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION_NAME="${{ github.event.inputs.version_name }}"
+            VERSION_CODE="${{ github.event.inputs.version_code }}"
+            PLAY_BUILD="${{ github.event.inputs.play_build }}"
+          elif [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            VERSION_NAME="${GITHUB_REF#refs/tags/v}"
+            VERSION_CODE="5"
+            PLAY_BUILD="false"
+          else
+            VERSION_NAME="1.1.0"
+            VERSION_CODE="5"
+            PLAY_BUILD="false"
+          fi
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "PLAY_BUILD=$PLAY_BUILD" >> $GITHUB_OUTPUT
+          echo "Building PocketForge version $VERSION_NAME (code: $VERSION_CODE, playBuild: $PLAY_BUILD)"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APK and App Bundle (AAB)
+        env:
+          MH_UPLOAD_STORE_FILE: ${{ github.workspace }}/${{ env.STORE_FILE }}
+          MH_UPLOAD_STORE_PASSWORD: ${{ env.STORE_PASS }}
+          MH_UPLOAD_KEY_ALIAS: ${{ env.ALIAS }}
+          MH_UPLOAD_KEY_PASSWORD: ${{ env.KEY_PASS }}
+        run: |
+          ./gradlew \
+            -PplayBuild=${{ steps.versioning.outputs.PLAY_BUILD }} \
+            -PappVersionCode=${{ steps.versioning.outputs.VERSION_CODE }} \
+            -PappVersionName=${{ steps.versioning.outputs.VERSION_NAME }} \
+            assembleRelease bundleRelease --stacktrace
+
+      - name: Prepare Release Artifacts
+        run: |
+          mkdir -p release-artifacts
+          VER="${{ steps.versioning.outputs.VERSION_NAME }}"
+          
+          # Copy APK
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk release-artifacts/pocketforge-v${VER}-release.apk
+            echo "APK ready: release-artifacts/pocketforge-v${VER}-release.apk"
+          fi
+          
+          # Copy Bundle (AAB)
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab release-artifacts/pocketforge-v${VER}-release.aab
+            echo "AAB ready: release-artifacts/pocketforge-v${VER}-release.aab"
+          fi
+          
+          # Copy output APKs if generated
+          find app/build/outputs/ -name "*.apk" -o -name "*.aab"
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketforge-release-apk-v${{ steps.versioning.outputs.VERSION_NAME }}
+          path: release-artifacts/*.apk
+          retention-days: 30
+
+      - name: Upload Release Bundle Artifact (AAB)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocketforge-release-bundle-v${{ steps.versioning.outputs.VERSION_NAME }}
+          path: release-artifacts/*.aab
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_github_release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PocketForge v${{ steps.versioning.outputs.VERSION_NAME }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.versioning.outputs.VERSION_NAME) }}
+          files: |
+            release-artifacts/*.apk
+            release-artifacts/*.aab
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## 🚀 PocketForge Mobile Release v${{ steps.versioning.outputs.VERSION_NAME }}
+            
+            ### 📦 Downloads:
+            - **Universal Release APK**: `pocketforge-v${{ steps.versioning.outputs.VERSION_NAME }}-release.apk`
+            - **Google Play App Bundle**: `pocketforge-v${{ steps.versioning.outputs.VERSION_NAME }}-release.aab`
+            
+            ### ✨ What's New:
+            - Full Termux & PRoot isolated Linux container environment
+            - Claude Code CLI AI Assistant terminal runner
+            - Complete multi-file workspace explorer (Copy, Cut, Paste, Rename, Delete, Share)
+            - Direct APK builder & `/output` artifact manager
+            - Cyberpunk themes (J.A.R.V.I.S, STARK IND, VERONICA, CYBER MATRIX)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -91,6 +91,18 @@ private data class ProjectTerminalResult(
     val cwd: String,
 )
 
+data class WorkspaceClipboard(
+    val sourcePaths: List<String>,
+    val isCut: Boolean = false,
+)
+
+private data class WorkspaceScanResult(
+    val entries: List<WorkspaceEntry>,
+    val apks: List<WorkspaceEntry>,
+    val suggestedRoot: String?,
+    val androidDetected: Boolean,
+)
+
 data class AppUiState(
     val startupStage: StartupStage = StartupStage.CHECKING,
     val startupProgress: Float = 0f,
@@ -111,6 +123,9 @@ data class AppUiState(
     val projectChats: List<ProjectChat> = emptyList(),
     val activeChatId: String? = null,
     val workspaceFiles: List<WorkspaceEntry> = emptyList(),
+    val selectedWorkspacePaths: Set<String> = emptySet(),
+    val workspaceClipboard: WorkspaceClipboard? = null,
+    val detectedApkOutputs: List<WorkspaceEntry> = emptyList(),
     val androidProjectDetected: Boolean = false,
     val filesLoading: Boolean = false,
     val openedFilePath: String? = null,
@@ -179,7 +194,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             backgroundSetupComplete = preferences.backgroundSetupComplete,
             provider = preferences.loadProvider(vault),
             themeMode = runCatching { com.pocketforge.mobile.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
-                .getOrDefault(com.pocketforge.mobile.ui.theme.AppThemeMode.DARK),
+                .getOrDefault(com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS),
             projects = preferences.loadProjects(),
             selectedDevStacks = preferences.selectedDevStacks.mapNotNull { name ->
                 runCatching { DevStack.valueOf(name) }.getOrNull()
@@ -745,10 +760,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 
     fun toggleTheme() {
-        val next = if (_state.value.themeMode == com.pocketforge.mobile.ui.theme.AppThemeMode.DARK) {
-            com.pocketforge.mobile.ui.theme.AppThemeMode.LIGHT
-        } else {
-            com.pocketforge.mobile.ui.theme.AppThemeMode.DARK
+        val next = when (_state.value.themeMode) {
+            com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS -> com.pocketforge.mobile.ui.theme.AppThemeMode.STARK
+            com.pocketforge.mobile.ui.theme.AppThemeMode.STARK -> com.pocketforge.mobile.ui.theme.AppThemeMode.VERONICA
+            com.pocketforge.mobile.ui.theme.AppThemeMode.VERONICA -> com.pocketforge.mobile.ui.theme.AppThemeMode.MATRIX
+            com.pocketforge.mobile.ui.theme.AppThemeMode.MATRIX -> com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS
+            com.pocketforge.mobile.ui.theme.AppThemeMode.LIGHT -> com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS
+            else -> com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS
         }
         setThemeMode(next)
     }
@@ -1663,23 +1681,396 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = _state.value.activeProject ?: return
         _state.update { it.copy(filesLoading = true) }
         viewModelScope.launch {
-            val (entries, suggestedRoot, androidProjectDetected) = withContext(Dispatchers.IO) {
-                Triple(
-                    readWorkspace(project),
-                    if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
-                    findAndroidGradleProjectRoot(projectWorkspaceRoot(project)) != null,
+            val scan = withContext(Dispatchers.IO) {
+                val root = projectWorkspaceRoot(project)
+                val allEntries = readWorkspace(project)
+                val apks = if (root.isDirectory) {
+                    val rootPath = root.canonicalFile.toPath()
+                    root.walkTopDown()
+                        .maxDepth(12)
+                        .filter { file ->
+                            file.isFile && (file.name.endsWith(".apk", ignoreCase = true) || file.name.endsWith(".aab", ignoreCase = true)) &&
+                                runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
+                        }
+                        .map { file ->
+                            val relative = file.relativeTo(root).invariantSeparatorsPath
+                            WorkspaceEntry(
+                                path = relative,
+                                name = file.name,
+                                isDirectory = false,
+                                depth = relative.count { it == '/' },
+                                sizeBytes = file.length(),
+                            )
+                        }
+                        .toList()
+                } else emptyList()
+
+                WorkspaceScanResult(
+                    entries = allEntries,
+                    apks = apks,
+                    suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
+                    androidDetected = findAndroidGradleProjectRoot(root) != null,
                 )
             }
             if (_state.value.activeProject?.id == project.id) {
                 _state.update {
                     it.copy(
-                        workspaceFiles = entries,
+                        workspaceFiles = scan.entries,
+                        detectedApkOutputs = scan.apks,
                         filesLoading = false,
-                        suggestedProjectRoot = suggestedRoot,
-                        androidProjectDetected = androidProjectDetected,
+                        suggestedProjectRoot = scan.suggestedRoot,
+                        androidProjectDetected = scan.androidDetected,
                     )
                 }
             }
+        }
+    }
+
+    fun toggleWorkspaceFileSelection(path: String) {
+        _state.update { current ->
+            val set = current.selectedWorkspacePaths
+            val updated = if (path in set) set - path else set + path
+            current.copy(selectedWorkspacePaths = updated)
+        }
+    }
+
+    fun selectAllWorkspaceFiles(paths: List<String>) {
+        _state.update { it.copy(selectedWorkspacePaths = paths.toSet()) }
+    }
+
+    fun clearWorkspaceFileSelection() {
+        _state.update { it.copy(selectedWorkspacePaths = emptySet()) }
+    }
+
+    fun copySelectedWorkspaceFiles(paths: List<String>) {
+        if (paths.isEmpty()) return
+        _state.update {
+            it.copy(
+                workspaceClipboard = WorkspaceClipboard(sourcePaths = paths, isCut = false),
+                toastMessage = if (paths.size == 1) "Copied 1 item to clipboard" else "Copied ${paths.size} items to clipboard",
+            )
+        }
+    }
+
+    fun cutSelectedWorkspaceFiles(paths: List<String>) {
+        if (paths.isEmpty()) return
+        _state.update {
+            it.copy(
+                workspaceClipboard = WorkspaceClipboard(sourcePaths = paths, isCut = true),
+                toastMessage = if (paths.size == 1) "Cut 1 item to clipboard" else "Cut ${paths.size} items to clipboard",
+            )
+        }
+    }
+
+    fun clearWorkspaceClipboard() {
+        _state.update { it.copy(workspaceClipboard = null) }
+    }
+
+    fun pasteWorkspaceFiles(targetDirectoryRelativePath: String) {
+        val project = _state.value.activeProject ?: return
+        val clipboard = _state.value.workspaceClipboard ?: return
+        if (clipboard.sourcePaths.isEmpty()) return
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val rootPath = root.canonicalFile.toPath()
+                    val targetDir = if (targetDirectoryRelativePath.isBlank()) root else File(root, targetDirectoryRelativePath)
+                    if (!targetDir.exists()) targetDir.mkdirs()
+                    if (!runCatching { targetDir.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)) {
+                        error("Invalid destination")
+                    }
+
+                    var count = 0
+                    clipboard.sourcePaths.forEach { sourceRel ->
+                        val src = File(root, sourceRel)
+                        if (src.exists() && runCatching { src.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) && src != root) {
+                            val dest = File(targetDir, src.name)
+                            if (src.canonicalPath != dest.canonicalPath) {
+                                if (src.isDirectory) {
+                                    src.copyRecursively(dest, overwrite = true)
+                                } else {
+                                    src.copyTo(dest, overwrite = true)
+                                }
+                                if (clipboard.isCut) {
+                                    src.deleteRecursively()
+                                }
+                                count++
+                            }
+                        }
+                    }
+                    count
+                }
+            }
+            _state.update {
+                it.copy(
+                    workspaceClipboard = if (clipboard.isCut) null else clipboard,
+                    selectedWorkspacePaths = emptySet(),
+                    toastMessage = result.fold(
+                        onSuccess = { count -> if (clipboard.isCut) "Moved $count item(s)" else "Pasted $count item(s)" },
+                        onFailure = { error -> "Paste failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
+        }
+    }
+
+    fun deleteWorkspaceEntries(relativePaths: List<String>) {
+        val project = _state.value.activeProject ?: return
+        if (relativePaths.isEmpty()) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val rootPath = root.canonicalFile.toPath()
+                    var deletedCount = 0
+                    relativePaths.forEach { rel ->
+                        val target = File(root, rel)
+                        if (target.exists() && runCatching { target.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) && target != root) {
+                            if (target.deleteRecursively()) {
+                                deletedCount++
+                            }
+                        }
+                    }
+                    deletedCount
+                }
+            }
+            _state.update {
+                it.copy(
+                    selectedWorkspacePaths = emptySet(),
+                    toastMessage = result.fold(
+                        onSuccess = { count -> if (count == 1) "Item deleted" else "$count items deleted" },
+                        onFailure = { error -> "Delete failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
+        }
+    }
+
+    fun renameWorkspaceEntry(oldRelativePath: String, newName: String) {
+        val project = _state.value.activeProject ?: return
+        val cleanName = newName.trim()
+        if (cleanName.isBlank() || cleanName.contains('/') || cleanName.contains('\\')) {
+            _state.update { it.copy(toastMessage = "Invalid name") }
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val rootPath = root.canonicalFile.toPath()
+                    val target = File(root, oldRelativePath)
+                    if (!target.exists() || !runCatching { target.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) || target == root) {
+                        error("Item not found")
+                    }
+                    val destination = File(target.parentFile ?: root, cleanName)
+                    if (destination.exists()) error("An item named '$cleanName' already exists")
+                    if (!target.renameTo(destination)) error("Failed to rename item")
+                    destination
+                }
+            }
+            _state.update {
+                it.copy(
+                    selectedWorkspacePaths = emptySet(),
+                    toastMessage = result.fold(
+                        onSuccess = { "Renamed to $cleanName" },
+                        onFailure = { error -> "Rename failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
+        }
+    }
+
+    fun moveWorkspaceEntries(sourceRelativePaths: List<String>, targetDirectoryRelativePath: String) {
+        val project = _state.value.activeProject ?: return
+        if (sourceRelativePaths.isEmpty()) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val rootPath = root.canonicalFile.toPath()
+                    val targetDir = if (targetDirectoryRelativePath.isBlank()) root else File(root, targetDirectoryRelativePath)
+                    if (!targetDir.exists()) targetDir.mkdirs()
+                    if (!runCatching { targetDir.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)) {
+                        error("Invalid destination")
+                    }
+                    var count = 0
+                    sourceRelativePaths.forEach { sourceRel ->
+                        val src = File(root, sourceRel)
+                        if (src.exists() && runCatching { src.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) && src != root) {
+                            val dest = File(targetDir, src.name)
+                            if (src.canonicalPath != dest.canonicalPath) {
+                                if (src.isDirectory) {
+                                    src.copyRecursively(dest, overwrite = true)
+                                    src.deleteRecursively()
+                                } else {
+                                    src.copyTo(dest, overwrite = true)
+                                    src.delete()
+                                }
+                                count++
+                            }
+                        }
+                    }
+                    count
+                }
+            }
+            _state.update {
+                it.copy(
+                    selectedWorkspacePaths = emptySet(),
+                    toastMessage = result.fold(
+                        onSuccess = { count -> "Moved $count item(s)" },
+                        onFailure = { error -> "Move failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
+        }
+    }
+
+    fun createWorkspaceFile(directoryRelativePath: String, fileName: String) {
+        val project = _state.value.activeProject ?: return
+        val cleanName = fileName.trim()
+        if (cleanName.isBlank() || cleanName.contains('/') || cleanName.contains('\\')) {
+            _state.update { it.copy(toastMessage = "Invalid file name") }
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val targetDir = if (directoryRelativePath.isBlank()) root else File(root, directoryRelativePath)
+                    if (!targetDir.exists()) targetDir.mkdirs()
+                    val newFile = File(targetDir, cleanName)
+                    if (newFile.exists()) error("File already exists")
+                    if (!newFile.createNewFile()) error("Failed to create file")
+                    newFile
+                }
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { "Created $cleanName" },
+                        onFailure = { error -> "Creation failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
+        }
+    }
+
+    fun createWorkspaceFolder(directoryRelativePath: String, folderName: String) {
+        val project = _state.value.activeProject ?: return
+        val cleanName = folderName.trim()
+        if (cleanName.isBlank() || cleanName.contains('/') || cleanName.contains('\\')) {
+            _state.update { it.copy(toastMessage = "Invalid folder name") }
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val targetDir = if (directoryRelativePath.isBlank()) root else File(root, directoryRelativePath)
+                    val newFolder = File(targetDir, cleanName)
+                    if (newFolder.exists()) error("Folder already exists")
+                    if (!newFolder.mkdirs() && !newFolder.exists()) error("Failed to create folder")
+                    newFolder
+                }
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { "Created folder $cleanName" },
+                        onFailure = { error -> "Creation failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
+        }
+    }
+
+    fun exportWorkspaceFile(relativePath: String, destinationUri: Uri) {
+        val project = _state.value.activeProject ?: return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val targetFile = File(root, relativePath)
+                    if (!targetFile.exists() || !targetFile.isFile) error("File not found: $relativePath")
+                    val output = getApplication<Application>().contentResolver.openOutputStream(destinationUri)
+                        ?: error("Unable to open destination")
+                    output.use { out ->
+                        targetFile.inputStream().use { input ->
+                            input.copyTo(out)
+                        }
+                    }
+                }
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { "Saved ${relativePath.substringAfterLast('/')} successfully" },
+                        onFailure = { error -> "Save failed: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+        }
+    }
+
+    fun getWorkspaceFile(relativePath: String): File? {
+        val project = _state.value.activeProject ?: return null
+        val root = projectWorkspaceRoot(project)
+        val file = File(root, relativePath)
+        return if (file.exists()) file else null
+    }
+
+    fun syncApksToOutputFolder() {
+        val project = _state.value.activeProject ?: return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project)
+                    val rootPath = root.canonicalFile.toPath()
+                    val outputDir = File(root, "output")
+                    if (!outputDir.exists()) outputDir.mkdirs()
+
+                    val apkFiles = root.walkTopDown()
+                        .maxDepth(12)
+                        .filter { file ->
+                            file.isFile &&
+                                (file.name.endsWith(".apk", ignoreCase = true) || file.name.endsWith(".aab", ignoreCase = true)) &&
+                                !file.parentFile?.canonicalPath.equals(outputDir.canonicalPath) &&
+                                runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
+                        }
+                        .toList()
+
+                    if (apkFiles.isEmpty()) {
+                        0
+                    } else {
+                        var copied = 0
+                        apkFiles.forEach { src ->
+                            val dest = File(outputDir, src.name)
+                            src.copyTo(dest, overwrite = true)
+                            copied++
+                        }
+                        copied
+                    }
+                }
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = result.fold(
+                        onSuccess = { count ->
+                            if (count == 0) "No new APK files to copy (or already in /output)" else "Saved $count APK(s) to /output folder"
+                        },
+                        onFailure = { error -> "Error copying APKs: ${error.message ?: "Unknown error"}" },
+                    ),
+                )
+            }
+            refreshProjectFiles()
         }
     }
 
@@ -1753,9 +2144,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun isExportExcludedPath(relativePath: String): Boolean {
+        if (relativePath.endsWith(".apk", ignoreCase = true) ||
+            relativePath.endsWith(".aab", ignoreCase = true) ||
+            relativePath.startsWith("output/") ||
+            relativePath == "output"
+        ) {
+            return false
+        }
         val excludedNames = setOf(
             ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
-            "node_modules", ".venv", "venv", "__pycache__", "build",
+            "node_modules", ".venv", "venv", "__pycache__",
         )
         return relativePath.split('/').any { it in excludedNames } || isClaudeRuntimeMetadata(relativePath)
     }

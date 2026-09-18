@@ -34,6 +34,35 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        create("releaseConfig") {
+            val storeFilePath = System.getenv("MH_UPLOAD_STORE_FILE")
+                ?: System.getenv("SIGNING_KEYSTORE_FILE")
+                ?: System.getenv("KEYSTORE_FILE")
+                ?: providers.gradleProperty("signingStoreFile").orNull
+
+            if (storeFilePath != null && file(storeFilePath).exists()) {
+                storeFile = file(storeFilePath)
+                storePassword = System.getenv("MH_UPLOAD_STORE_PASSWORD")
+                    ?: System.getenv("SIGNING_STORE_PASSWORD")
+                    ?: providers.gradleProperty("signingStorePassword").orNull ?: ""
+                keyAlias = System.getenv("MH_UPLOAD_KEY_ALIAS")
+                    ?: System.getenv("SIGNING_KEY_ALIAS")
+                    ?: providers.gradleProperty("signingKeyAlias").orNull ?: ""
+                keyPassword = System.getenv("MH_UPLOAD_KEY_PASSWORD")
+                    ?: System.getenv("SIGNING_KEY_PASSWORD")
+                    ?: providers.gradleProperty("signingKeyPassword").orNull ?: ""
+            } else if (file("${rootDir}/release.keystore").exists()) {
+                storeFile = file("${rootDir}/release.keystore")
+                storePassword = System.getenv("MH_UPLOAD_STORE_PASSWORD") ?: "pocketforge"
+                keyAlias = System.getenv("MH_UPLOAD_KEY_ALIAS") ?: "release"
+                keyPassword = System.getenv("MH_UPLOAD_KEY_PASSWORD") ?: "pocketforge"
+            } else {
+                storeFile = file("${rootDir}/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     defaultConfig {
@@ -74,6 +103,7 @@ android {
             )
         }
         release {
+            signingConfig = signingConfigs.getByName("releaseConfig")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

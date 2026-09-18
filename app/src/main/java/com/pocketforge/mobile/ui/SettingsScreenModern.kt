@@ -29,24 +29,30 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -328,16 +334,132 @@ fun SettingsScreen(
 
             item {
                 SettingsAccordion(
-                    title = "Appearance",
-                    subtitle = when (state.themeMode) { AppThemeMode.DARK -> "Dark theme"; AppThemeMode.LIGHT -> "Light theme"; AppThemeMode.SYSTEM -> "Follow system" },
-                    icon = Icons.Default.Tune,
+                    title = "Cyber Core // Themes",
+                    subtitle = "${state.themeMode.title} · ${state.themeMode.subtitle}",
+                    icon = Icons.Default.Palette,
                     expanded = expanded == SettingsSection.APPEARANCE,
                     onClick = { toggle(SettingsSection.APPEARANCE) },
                 ) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ModernThemeChoice("Dark", Icons.Default.DarkMode, state.themeMode == AppThemeMode.DARK, { onSetThemeMode(AppThemeMode.DARK) }, Modifier.weight(1f))
-                        ModernThemeChoice("Light", Icons.Default.LightMode, state.themeMode == AppThemeMode.LIGHT, { onSetThemeMode(AppThemeMode.LIGHT) }, Modifier.weight(1f))
-                        ModernThemeChoice("System", Icons.Default.PhoneAndroid, state.themeMode == AppThemeMode.SYSTEM, { onSetThemeMode(AppThemeMode.SYSTEM) }, Modifier.weight(1f))
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // Live HUD Active Theme Status Banner
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = "ACTIVE PROTOCOL: ${state.themeMode.title}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            letterSpacing = 0.5.sp,
+                                        )
+                                        Text(
+                                            text = "AURA // ${state.themeMode.subtitle}",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)),
+                                    modifier = Modifier.padding(2.dp),
+                                ) {
+                                    Text(
+                                        text = "CORE ONLINE",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                    )
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = "CYBERPUNK NEON PRESETS",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            letterSpacing = 0.8.sp,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+
+                        // 2x2 Grid of Futuristic Cyber Themes
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CyberThemeCard(
+                                title = "J.A.R.V.I.S",
+                                tag = "ARC CYAN",
+                                color = Color(0xFF00F0FF),
+                                icon = Icons.Default.ElectricBolt,
+                                selected = state.themeMode == AppThemeMode.JARVIS,
+                                onClick = { onSetThemeMode(AppThemeMode.JARVIS) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            CyberThemeCard(
+                                title = "STARK IND",
+                                tag = "AMBER GOLD",
+                                color = Color(0xFFFF9900),
+                                icon = Icons.Default.Whatshot,
+                                selected = state.themeMode == AppThemeMode.STARK,
+                                onClick = { onSetThemeMode(AppThemeMode.STARK) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CyberThemeCard(
+                                title = "VERONICA",
+                                tag = "CRIMSON",
+                                color = Color(0xFFFF0055),
+                                icon = Icons.Default.Shield,
+                                selected = state.themeMode == AppThemeMode.VERONICA,
+                                onClick = { onSetThemeMode(AppThemeMode.VERONICA) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            CyberThemeCard(
+                                title = "CYBER MATRIX",
+                                tag = "EMERALD",
+                                color = Color(0xFF00FF88),
+                                icon = Icons.Default.Terminal,
+                                selected = state.themeMode == AppThemeMode.MATRIX,
+                                onClick = { onSetThemeMode(AppThemeMode.MATRIX) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        Text(
+                            text = "SYSTEM & UTILITY MODES",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            letterSpacing = 0.8.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ModernThemeChoice("Auto System", Icons.Default.PhoneAndroid, state.themeMode == AppThemeMode.SYSTEM, { onSetThemeMode(AppThemeMode.SYSTEM) }, Modifier.weight(1f))
+                            ModernThemeChoice("Light Core", Icons.Default.LightMode, state.themeMode == AppThemeMode.LIGHT, { onSetThemeMode(AppThemeMode.LIGHT) }, Modifier.weight(1f))
+                            ModernThemeChoice("Onyx Dark", Icons.Default.DarkMode, state.themeMode == AppThemeMode.DARK, { onSetThemeMode(AppThemeMode.DARK) }, Modifier.weight(1f))
+                        }
                     }
                 }
             }
@@ -635,25 +757,137 @@ private fun ConnectionSettings(
 @Composable
 private fun SelectionDot(selected: Boolean) {
     Box(
-        Modifier.size(20.dp).border(if (selected) 2.dp else 1.dp, if (selected) PocketOrange else MaterialTheme.colorScheme.outline, CircleShape),
+        Modifier.size(20.dp).border(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        if (selected) Box(Modifier.size(9.dp).background(PocketOrange, CircleShape))
+        if (selected) Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
     }
 }
 
 @Composable
-private fun ModernThemeChoice(title: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun CyberThemeCard(
+    title: String,
+    tag: String,
+    color: Color,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) color.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = BorderStroke(
+            width = if (selected) 1.8.dp else 1.dp,
+            color = if (selected) color else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = color.copy(alpha = 0.2f),
+                    border = BorderStroke(1.dp, color.copy(alpha = 0.5f)),
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = color,
+                        modifier = Modifier.padding(6.dp).size(18.dp),
+                    )
+                }
+
+                if (selected) {
+                    Surface(
+                        shape = CircleShape,
+                        color = color,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Selected",
+                            tint = Color.Black,
+                            modifier = Modifier.padding(2.dp).size(12.dp),
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(color, CircleShape)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(2.dp))
+
+            Text(
+                text = title,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (selected) color else MaterialTheme.colorScheme.onSurface,
+                letterSpacing = 0.4.sp,
+            )
+
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = color.copy(alpha = 0.12f),
+            ) {
+                Text(
+                    text = tag,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = color,
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                    letterSpacing = 0.5.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModernThemeChoice(
+    title: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         modifier = modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        color = if (selected) PocketOrange.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) PocketOrange else MaterialTheme.colorScheme.outlineVariant),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+        ),
     ) {
-        Column(Modifier.padding(vertical = 13.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, title, Modifier.size(20.dp), tint = if (selected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(5.dp))
-            Text(title, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+        Column(
+            Modifier.padding(vertical = 12.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                modifier = Modifier.size(18.dp),
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = title,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
         }
     }
 }

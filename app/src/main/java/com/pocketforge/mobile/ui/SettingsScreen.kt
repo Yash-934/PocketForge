@@ -164,27 +164,34 @@ private fun LegacySettingsScreen(
                 Spacer(Modifier.height(10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     ThemeOptionCard(
-                        title = "Dark",
+                        title = "J.A.R.V.I.S",
                         icon = Icons.Default.DarkMode,
-                        selected = state.themeMode == AppThemeMode.DARK,
-                        onClick = { onSetThemeMode(AppThemeMode.DARK) },
+                        selected = state.themeMode == AppThemeMode.JARVIS,
+                        onClick = { onSetThemeMode(AppThemeMode.JARVIS) },
                         modifier = Modifier.weight(1f),
                     )
                     ThemeOptionCard(
-                        title = "Light",
-                        icon = Icons.Default.LightMode,
-                        selected = state.themeMode == AppThemeMode.LIGHT,
-                        onClick = { onSetThemeMode(AppThemeMode.LIGHT) },
+                        title = "STARK",
+                        icon = Icons.Default.DarkMode,
+                        selected = state.themeMode == AppThemeMode.STARK,
+                        onClick = { onSetThemeMode(AppThemeMode.STARK) },
                         modifier = Modifier.weight(1f),
                     )
                     ThemeOptionCard(
-                        title = "System",
-                        icon = Icons.Default.PhoneAndroid,
-                        selected = state.themeMode == AppThemeMode.SYSTEM,
-                        onClick = { onSetThemeMode(AppThemeMode.SYSTEM) },
+                        title = "VERONICA",
+                        icon = Icons.Default.DarkMode,
+                        selected = state.themeMode == AppThemeMode.VERONICA,
+                        onClick = { onSetThemeMode(AppThemeMode.VERONICA) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    ThemeOptionCard(
+                        title = "MATRIX",
+                        icon = Icons.Default.DarkMode,
+                        selected = state.themeMode == AppThemeMode.MATRIX,
+                        onClick = { onSetThemeMode(AppThemeMode.MATRIX) },
                         modifier = Modifier.weight(1f),
                     )
                 }
