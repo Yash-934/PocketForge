@@ -78,32 +78,58 @@ jobs:
       - name: Setup Release Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.MH_UPLOAD_STORE_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.MH_UPLOAD_STORE_PASSWORD || 'pocketforge' }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.MH_UPLOAD_KEY_ALIAS || 'pocketforge' }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.MH_UPLOAD_KEY_PASSWORD || 'pocketforge' }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.MH_UPLOAD_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || secrets.MH_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.MH_UPLOAD_KEY_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "Decoding release keystore from secrets..."
             echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+            
+            # Determine correct storepass
+            PASS="${KEYSTORE_PASSWORD:-pocketforge}"
+            if ! keytool -list -keystore release.keystore -storepass "$PASS" >/dev/null 2>&1; then
+              if keytool -list -keystore release.keystore -storepass "android" >/dev/null 2>&1; then
+                PASS="android"
+              elif keytool -list -keystore release.keystore -storepass "pocketforge" >/dev/null 2>&1; then
+                PASS="pocketforge"
+              fi
+            fi
+
+            # Auto-detect private key alias directly from inside the keystore
+            AUTO_ALIAS=$(keytool -list -keystore release.keystore -storepass "$PASS" 2>/dev/null | grep -i "PrivateKeyEntry" | head -n 1 | cut -d',' -f1 | tr -d ' ' || true)
+            FINAL_ALIAS="${KEY_ALIAS:-$AUTO_ALIAS}"
+            if [ -z "$FINAL_ALIAS" ]; then
+              FINAL_ALIAS="$AUTO_ALIAS"
+            fi
+            if [ -z "$FINAL_ALIAS" ]; then
+              FINAL_ALIAS="vaultkey"
+            fi
+
+            KEY_PASS="${KEY_PASSWORD:-$PASS}"
+
+            echo "Keystore successfully configured with alias: $FINAL_ALIAS"
             echo "STORE_FILE=release.keystore" >> $GITHUB_ENV
-            echo "STORE_PASS=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
-            echo "ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
-            echo "KEY_PASS=$KEY_PASSWORD" >> $GITHUB_ENV
+            echo "STORE_PASS=$PASS" >> $GITHUB_ENV
+            echo "ALIAS=$FINAL_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASS=$KEY_PASS" >> $GITHUB_ENV
           else
             echo "Generating self-signed release keystore for CI build..."
+            FINAL_ALIAS="${KEY_ALIAS:-vaultkey}"
+            PASS="${KEYSTORE_PASSWORD:-pocketforge}"
             keytool -genkeypair -v \
               -keystore release.keystore \
-              -alias pocketforge \
+              -alias "$FINAL_ALIAS" \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -storepass pocketforge \
-              -keypass pocketforge \
+              -storepass "$PASS" \
+              -keypass "$PASS" \
               -dname "CN=PocketForge,O=PocketForge,C=IN"
             echo "STORE_FILE=release.keystore" >> $GITHUB_ENV
-            echo "STORE_PASS=pocketforge" >> $GITHUB_ENV
-            echo "ALIAS=pocketforge" >> $GITHUB_ENV
-            echo "KEY_PASS=pocketforge" >> $GITHUB_ENV
+            echo "STORE_PASS=$PASS" >> $GITHUB_ENV
+            echo "ALIAS=$FINAL_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASS=$PASS" >> $GITHUB_ENV
           fi
 
       - name: Determine Versioning
