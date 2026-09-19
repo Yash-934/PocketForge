@@ -17,7 +17,7 @@
                     android:endY="92"
                     android:type="linear">
                     <item android:offset="0.0" android:color="#3300F0FF" />
-                    <item android:offset="1.0" android:color="#22FF9900" />
+                    <item android:offset="1.0" android:color="#2200F0FF" />
                 </gradient>
             </aapt:attr>
         </path>
@@ -53,8 +53,8 @@
                     android:endY="82"
                     android:type="linear">
                     <item android:offset="0.0" android:color="#00F0FF" />
-                    <item android:offset="0.6" android:color="#0088FF" />
-                    <item android:offset="1.0" android:color="#FF9900" />
+                    <item android:offset="0.6" android:color="#00B8FF" />
+                    <item android:offset="1.0" android:color="#00F0FF" />
                 </gradient>
             </aapt:attr>
         </path>
@@ -85,9 +85,9 @@
             android:fillColor="#00000000"
             android:pathData="M37,49 L47,57 L37,65" />
 
-        <!-- Terminal Blinking Cursor '_' Neon Amber -->
+        <!-- Terminal Blinking Cursor '_' Neon Cyan -->
         <path
-            android:strokeColor="#FF9900"
+            android:strokeColor="#00F0FF"
             android:strokeWidth="3.2"
             android:strokeLineCap="round"
             android:fillColor="#00000000"
@@ -99,7 +99,7 @@
             android:fillColor="#00F0FF" />
         <path
             android:pathData="M78,52m-1.2,0a1.2,1.2 0 1,1 2.4,0a1.2,1.2 0 1,1 -2.4,0"
-            android:fillColor="#FF9900" />
+            android:fillColor="#00F0FF" />
     </group>
 </vector>
 

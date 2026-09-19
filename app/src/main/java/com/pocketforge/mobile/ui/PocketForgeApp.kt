@@ -211,7 +211,6 @@ import com.pocketforge.mobile.network.DiscoveredModel
 import com.pocketforge.mobile.network.ModelDiscoveryResult
 import com.pocketforge.mobile.ui.theme.PocketBlue
 import com.pocketforge.mobile.ui.theme.PocketGreen
-import com.pocketforge.mobile.ui.theme.PocketOrange
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -1214,7 +1213,7 @@ private fun StartupLoadingScreen(
                         "STEP 1 OF 3",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = PocketOrange,
+                        color = MaterialTheme.colorScheme.primary,
                         letterSpacing = 1.1.sp,
                     )
                     Spacer(Modifier.weight(1f))
@@ -1680,7 +1679,7 @@ private fun StepDots(step: Int) {
         repeat(3) { index ->
             Box(
                 Modifier.height(5.dp).weight(1f)
-                    .background(if (index <= step) PocketOrange else MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                    .background(if (index <= step) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, CircleShape),
             )
         }
     }
@@ -1736,7 +1735,7 @@ private fun ProviderChoiceStep(selected: ProviderKind, onSelected: (ProviderKind
                 "STEP 2 OF 3",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
-                color = PocketOrange,
+                color = MaterialTheme.colorScheme.primary,
                 letterSpacing = 1.1.sp,
             )
             Spacer(Modifier.weight(1f))
@@ -1828,7 +1827,7 @@ private fun ProviderChoiceRow(
         ProviderKind.DEEPSEEK -> Color(0xFF4D6BFE)
         ProviderKind.NVIDIA_NIM -> Color(0xFF76B900)
         ProviderKind.KIMI -> Color(0xFF8B7CF6)
-        ProviderKind.CUSTOM -> PocketOrange
+        ProviderKind.CUSTOM -> MaterialTheme.colorScheme.primary
     }
     val mark = when (provider) {
         ProviderKind.CLAUDE -> "C"
@@ -2030,12 +2029,12 @@ private fun ProviderCredentialsStep(
                                 Box(
                                     Modifier.size(20.dp).border(
                                         if (model == option.id) 2.dp else 1.dp,
-                                        if (model == option.id) PocketOrange else MaterialTheme.colorScheme.outline,
+                                        if (model == option.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                                         CircleShape,
                                     ),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    if (model == option.id) Box(Modifier.size(9.dp).background(PocketOrange, CircleShape))
+                                    if (model == option.id) Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
                                 }
                             }
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
@@ -2053,7 +2052,7 @@ private fun ProviderCredentialsStep(
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("STEP 3 OF 3", color = PocketOrange, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text("STEP 3 OF 3", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Spacer(Modifier.weight(1f))
                 Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = CircleShape) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2377,19 +2376,19 @@ private fun ProjectsScreen(
                     Surface(
                         modifier = Modifier.fillMaxWidth().clickable { showUpdateDialog = true },
                         shape = RoundedCornerShape(20.dp),
-                        color = PocketOrange.copy(alpha = 0.11f),
-                        border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.45f)),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.11f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
                     ) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Surface(shape = CircleShape, color = PocketOrange.copy(alpha = 0.18f), modifier = Modifier.size(46.dp)) {
-                                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Download, null, tint = PocketOrange) }
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), modifier = Modifier.size(46.dp)) {
+                                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.primary) }
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text("PocketForge ${update.versionName}", fontWeight = FontWeight.Bold)
                                 Text("A new update is ready", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Text("Update", color = PocketOrange, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Update", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
@@ -2413,14 +2412,14 @@ private fun ProjectsScreen(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = PocketOrange.copy(alpha = 0.15f),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                                 modifier = Modifier.size(56.dp),
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         Icons.Default.Folder,
                                         contentDescription = null,
-                                        tint = PocketOrange,
+                                        tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(28.dp),
                                     )
                                 }
@@ -2451,7 +2450,7 @@ private fun ProjectsScreen(
                                     modifier = Modifier.weight(1f).height(42.dp),
                                     shape = RoundedCornerShape(12.dp),
                                 ) {
-                                    Icon(Icons.Default.Upload, null, Modifier.size(16.dp), tint = PocketOrange)
+                                    Icon(Icons.Default.Upload, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                                     Spacer(Modifier.width(6.dp))
                                     Text("Upload ZIP", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 }
@@ -2509,7 +2508,7 @@ private fun ProjectsScreen(
         val progress = if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 1f) else 0f
         AlertDialog(
             onDismissRequest = { if (!installing) showUpdateDialog = false },
-            icon = { Icon(Icons.Default.Download, null, tint = PocketOrange, modifier = Modifier.size(34.dp)) },
+            icon = { Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp)) },
             title = { Text("Update to ${update.versionName}", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2563,7 +2562,7 @@ private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () 
     val dotColor = when (state.apiPingStatus) {
         ApiPingStatus.OK -> PocketGreen
         ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-        ApiPingStatus.PINGING -> PocketOrange
+        ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
         ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
     }
     val providerLabel = when {
@@ -2606,7 +2605,7 @@ private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () 
                 modifier = Modifier.size(28.dp),
             ) {
                 if (state.apiPingStatus == ApiPingStatus.PINGING) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = PocketOrange)
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
                 } else {
                     Icon(
                         Icons.Default.Refresh,
@@ -3259,7 +3258,7 @@ private fun FileViewerScreen(
                             Icon(
                                 if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                                 "Copy file contents",
-                                tint = if (copied) PocketOrange else MaterialTheme.colorScheme.onSurface,
+                                tint = if (copied) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                             )
                         }
                     }
@@ -3272,7 +3271,7 @@ private fun FileViewerScreen(
             when {
                 loading -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = PocketOrange)
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 content == null -> {
@@ -3498,7 +3497,7 @@ private fun FilesTab(
                             ) {
                                 DropdownMenuItem(
                                     text = { Text("Upload project ZIP") },
-                                    leadingIcon = { Icon(Icons.Default.Folder, null, tint = PocketOrange) },
+                                    leadingIcon = { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary) },
                                     onClick = {
                                         uploadMenuOpen = false
                                         onUploadZip()
@@ -3584,7 +3583,7 @@ private fun FilesTab(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                Icon(Icons.Default.CreateNewFolder, null, Modifier.size(16.dp), tint = PocketOrange)
+                                Icon(Icons.Default.CreateNewFolder, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                                 Text("+ Folder", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
@@ -3636,7 +3635,7 @@ private fun FilesTab(
                                         enabled = isAnySelected,
                                         modifier = Modifier.size(34.dp),
                                     ) {
-                                        Icon(Icons.Default.ContentCut, "Cut selected", Modifier.size(16.dp), tint = if (isAnySelected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                        Icon(Icons.Default.ContentCut, "Cut selected", Modifier.size(16.dp), tint = if (isAnySelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
                                     }
 
                                     // Move To
@@ -3917,14 +3916,14 @@ private fun FilesTab(
                     ) {
                         Surface(
                             shape = CircleShape,
-                            color = PocketOrange.copy(alpha = 0.15f),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                             modifier = Modifier.size(56.dp),
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     Icons.Default.Folder,
                                     contentDescription = null,
-                                    tint = PocketOrange,
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(28.dp),
                                 )
                             }
@@ -4132,7 +4131,7 @@ private fun FilesTab(
                                     )
                                     DropdownMenuItem(
                                         text = { Text("Copy to /output folder") },
-                                        leadingIcon = { Icon(Icons.Default.Folder, null, tint = PocketOrange) },
+                                        leadingIcon = { Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary) },
                                         onClick = {
                                             itemMenuOpen = false
                                             onSyncApksToOutput()
@@ -4154,7 +4153,7 @@ private fun FilesTab(
                                 )
                                 DropdownMenuItem(
                                     text = { Text("New folder inside") },
-                                    leadingIcon = { Icon(Icons.Default.CreateNewFolder, null, tint = PocketOrange) },
+                                    leadingIcon = { Icon(Icons.Default.CreateNewFolder, null, tint = MaterialTheme.colorScheme.primary) },
                                     onClick = {
                                         itemMenuOpen = false
                                         newFolderDialogDir = entry.path
@@ -4330,7 +4329,7 @@ private fun FilesTab(
                     Text(
                         if (targetDir.isBlank()) "Location: Workspace Root (/)" else "Location: /$targetDir",
                         fontSize = 11.sp,
-                        color = PocketOrange,
+                        color = MaterialTheme.colorScheme.primary,
                         fontFamily = FontFamily.Monospace,
                     )
                     OutlinedTextField(
@@ -4439,7 +4438,7 @@ private fun FilesTab(
                                     modifier = Modifier.fillMaxWidth().clickable { selectedDestination = "" },
                                 ) {
                                     Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Folder, null, tint = PocketOrange, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(6.dp))
                                         Text("/ (Workspace Root)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                     }
@@ -4452,7 +4451,7 @@ private fun FilesTab(
                                     modifier = Modifier.fillMaxWidth().clickable { selectedDestination = dir },
                                 ) {
                                     Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Folder, null, tint = PocketOrange, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(6.dp))
                                         Text("/$dir", fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                                     }
@@ -4496,7 +4495,7 @@ private fun getWorkspaceEntryIcon(entry: WorkspaceEntry): ImageVector {
 
 @Composable
 private fun getWorkspaceEntryTint(entry: WorkspaceEntry): Color {
-    if (entry.isDirectory) return PocketOrange
+    if (entry.isDirectory) return MaterialTheme.colorScheme.primary
     val lower = entry.name.lowercase()
     return when {
         lower.endsWith(".apk") || lower.endsWith(".aab") -> Color(0xFF10B981)
@@ -5124,7 +5123,7 @@ private fun AttachmentChip(
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(Modifier.padding(start = 9.dp, end = if (onRemove == null) 10.dp else 3.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, Modifier.size(17.dp), tint = PocketOrange)
+            Icon(icon, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(7.dp))
             Column(Modifier.widthIn(max = 180.dp)) {
                 Text(attachment.displayName, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -5144,7 +5143,7 @@ private fun ApprovalCard(request: ToolRequest, onApproval: (Boolean) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Warning, null, tint = PocketOrange)
+                Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp)); Text("Review this action", fontWeight = FontWeight.Bold)
             }
             Text(request.explanation)

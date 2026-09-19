@@ -80,6 +80,8 @@ class RuntimeExecutionService : Service() {
     private fun runningNotification(detail: String, includeStop: Boolean): android.app.Notification {
         val builder = NotificationCompat.Builder(this, RUNNING_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(NotificationVisuals.getOrGenerateLargeIcon(this))
+            .setColor(NotificationVisuals.ACCENT_COLOR)
             .setContentTitle("PocketForge is working")
             .setContentText(detail)
             .setContentIntent(openAppIntent())
@@ -105,6 +107,8 @@ class RuntimeExecutionService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         val notification = NotificationCompat.Builder(this, RESULT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(NotificationVisuals.getOrGenerateLargeIcon(this))
+            .setColor(NotificationVisuals.ACCENT_COLOR)
             .setContentTitle(title)
             .setContentText(detail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
@@ -166,11 +170,15 @@ class RuntimeExecutionService : Service() {
             manager.createNotificationChannel(
                 NotificationChannel(RUNNING_CHANNEL_ID, "Running coding tasks", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Shows progress while PocketForge is working in the background"
+                    lightColor = NotificationVisuals.ACCENT_COLOR
+                    enableLights(true)
                 },
             )
             manager.createNotificationChannel(
                 NotificationChannel(RESULT_CHANNEL_ID, "Task results", NotificationManager.IMPORTANCE_DEFAULT).apply {
                     description = "Notifies you when a coding task finishes or needs attention"
+                    lightColor = NotificationVisuals.ACCENT_COLOR
+                    enableLights(true)
                 },
             )
         }

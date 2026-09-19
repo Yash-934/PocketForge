@@ -293,6 +293,8 @@ class RuntimeSetupService : Service() {
         val latest = state.logs.lastOrNull().orEmpty().take(180)
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(NotificationVisuals.getOrGenerateLargeIcon(this))
+            .setColor(NotificationVisuals.ACCENT_COLOR)
             .setContentTitle("Setting up PocketForge")
             .setContentText(latest.ifBlank { state.message })
             .setStyle(NotificationCompat.BigTextStyle().bigText(latest.ifBlank { state.message }))
@@ -322,6 +324,8 @@ class RuntimeSetupService : Service() {
         val detail = if (success) "Your private coding workspace is ready." else state.errorMessage.orEmpty()
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(NotificationVisuals.getOrGenerateLargeIcon(this))
+            .setColor(NotificationVisuals.ACCENT_COLOR)
             .setContentTitle(title)
             .setContentText(detail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
@@ -373,6 +377,8 @@ class RuntimeSetupService : Service() {
             context.getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "PocketForge setup", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Shows download and installation progress for the private coding environment"
+                    lightColor = NotificationVisuals.ACCENT_COLOR
+                    enableLights(true)
                 },
             )
         }

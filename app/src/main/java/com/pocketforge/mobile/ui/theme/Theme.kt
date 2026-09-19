@@ -17,7 +17,7 @@ val CyberAmber = Color(0xFFFF9900)
 val CyberCrimson = Color(0xFFFF0055)
 val CyberEmerald = Color(0xFF00FF88)
 
-val PocketOrange = CyberAmber
+val PocketOrange = CyberCyan
 val PocketBlue = CyberCyan
 val PocketGreen = CyberEmerald
 val PocketBackground = Color(0xFF050B14)

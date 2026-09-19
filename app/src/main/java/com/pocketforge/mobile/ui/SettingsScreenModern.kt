@@ -100,7 +100,6 @@ import com.pocketforge.mobile.network.ConnectionValidation
 import com.pocketforge.mobile.network.DiscoveredModel
 import com.pocketforge.mobile.network.ModelDiscoveryResult
 import com.pocketforge.mobile.ui.theme.AppThemeMode
-import com.pocketforge.mobile.ui.theme.PocketOrange
 import kotlinx.coroutines.launch
 
 private enum class SettingsSection { CONNECTION, APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
@@ -489,7 +488,7 @@ fun SettingsScreen(
                                 Text(stack.installsSummary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             when {
-                                installing -> Text("${(state.devStackProgress * 100).toInt()}%", color = PocketOrange, fontWeight = FontWeight.Bold)
+                                installing -> Text("${(state.devStackProgress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                                 installed && stack == DevStack.WEB -> Text("Core", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 installed -> {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -577,7 +576,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Settings, null, Modifier.size(20.dp), tint = PocketOrange)
+                        Icon(Icons.Default.Settings, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text("PocketForge", fontWeight = FontWeight.SemiBold)
@@ -725,7 +724,7 @@ private fun ConnectionSettings(
                 when (state.apiPingStatus) {
                     ApiPingStatus.OK -> Color(0xFF58C9A3)
                     ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-                    ApiPingStatus.PINGING -> PocketOrange
+                    ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
                     ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
                 }, CircleShape,
             ))
