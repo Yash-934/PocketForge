@@ -104,6 +104,7 @@ private fun LegacySettingsScreen(
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
     onInstallDevStack: (DevStack) -> Unit = {},
+    onRemoveDevStack: (DevStack) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()

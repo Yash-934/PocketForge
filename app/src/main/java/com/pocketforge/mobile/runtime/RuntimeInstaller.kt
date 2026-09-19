@@ -134,7 +134,7 @@ class RuntimeInstaller(private val context: Context) {
         selectedStacks: Set<DevStack> = emptySet(),
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ): InstalledRuntime {
-        require(android.os.Build.SUPPORTED_ABIS.contains("arm64-v8a")) { "Pocket runtime requires an ARM64 device" }
+        require(RuntimeCompatibility.isDeviceSupported()) { "PocketForge runtime requires a 64-bit ARM device (arm64-v8a)" }
         val proot = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
         require(proot.canExecute()) { "The embedded PRoot launcher is unavailable" }
 
@@ -257,6 +257,59 @@ class RuntimeInstaller(private val context: Context) {
         applyStack(runtime.proot, stack, 0.05f, 0.95f, onProgress)
         onProgress(RuntimeInstallProgress("${stack.label} tools are ready", 1f))
     }
+
+    /**
+     * Safely uninstalls an optional development stack, cleaning up associated
+     * binaries, SDK files, and package dependencies while strictly preserving user
+     * workspaces and other toolchains.
+     */
+    suspend fun removeStack(
+        stack: DevStack,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit = {},
+    ): Result<Unit> = runCatching {
+        val runtime = runCatching { installedRuntime() }.getOrNull()
+        onProgress(RuntimeInstallProgress("Removing ${stack.label} tools…", 0.2f))
+        when (stack) {
+            DevStack.ANDROID -> {
+                File(rootfs, "root/.pocket-android-tools-version").delete()
+                File(rootfs, "root/android-sdk").deleteRecursively()
+                File(rootfs, "opt/gradle").deleteRecursively()
+                File(rootfs, "root/maven/localMvnRepository").deleteRecursively()
+                File(rootfs, "root/.gradle/init.d/pocketdev-android.gradle").delete()
+            }
+            DevStack.PYTHON -> {
+                File(rootfs, "usr/local/bin/python3").delete()
+                File(rootfs, "usr/local/bin/pip3").delete()
+                File(rootfs, "usr/local/bin/pip").delete()
+            }
+            DevStack.CPP -> {
+                if (runtime != null) {
+                    runCatching {
+                        aptRemoveInternal(runtime.proot, listOf("build-essential", "cmake", "gdb"), 0.5f, onProgress)
+                    }
+                }
+            }
+            DevStack.PHP -> {
+                File(rootfs, "usr/local/bin/composer").delete()
+                if (runtime != null) {
+                    runCatching {
+                        aptRemoveInternal(runtime.proot, listOf("php-cli", "php-mbstring", "php-xml", "php-curl", "php-zip"), 0.5f, onProgress)
+                    }
+                }
+            }
+            DevStack.WEB -> Unit
+        }
+        val state = readDevStackState()
+        state[stack.name] = false
+        writeDevStackState(state)
+        onProgress(RuntimeInstallProgress("${stack.label} tools removed", 1f))
+    }
+
+    suspend fun removePythonStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.PYTHON, onProgress)
+    suspend fun removeAndroidStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.ANDROID, onProgress)
+    suspend fun removeCppStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.CPP, onProgress)
+    suspend fun removePhpStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.PHP, onProgress)
+    suspend fun removeWebStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.WEB, onProgress)
 
     private suspend fun applyStack(
         proot: File,
@@ -748,6 +801,28 @@ class RuntimeInstaller(private val context: Context) {
             timeoutMs = 30 * 60 * 1_000L,
             onProgress = onProgress,
             failureMessage = "Could not install: $packageNames",
+        )
+    }
+
+    private suspend fun aptRemoveInternal(
+        proot: File,
+        packages: List<String>,
+        fraction: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val packageNames = packages.joinToString(" ")
+        val command = "export DEBIAN_FRONTEND=noninteractive; " +
+            "apt-get -o DPkg::Lock::Timeout=120 remove -y --purge $packageNames && " +
+            "apt-get -o DPkg::Lock::Timeout=120 autoremove -y && " +
+            "apt-get clean"
+        runGuestCommand(
+            proot = proot,
+            command = command,
+            displayCommand = "apt-get remove -y $packageNames",
+            fraction = fraction,
+            timeoutMs = 15 * 60 * 1_000L,
+            onProgress = onProgress,
+            failureMessage = "Could not remove: $packageNames",
         )
     }
 

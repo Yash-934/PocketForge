@@ -1570,6 +1570,7 @@ private fun RootScreenHost(
                     onClearTerminal = viewModel::clearTerminal,
                     getSavedApiKey = viewModel::getSavedApiKey,
                     onInstallDevStack = viewModel::installDevStack,
+                    onRemoveDevStack = viewModel::removeDevStack,
                     initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
                     onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                     onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
@@ -1652,9 +1653,7 @@ private fun ProviderSetupScreen(
                         }
                     },
                     onContinue = {
-                        if (selected == ProviderKind.CLAUDE) {
-                            onSave(ProviderProfile(selected), "")
-                        } else step = 2
+                        step = 2
                     },
                 )
                 else -> ProviderCredentialsStep(
@@ -1827,6 +1826,7 @@ private fun ProviderChoiceRow(
         ProviderKind.ANTHROPIC -> Color(0xFFE7A26D)
         ProviderKind.LLM_ROUTER -> Color(0xFF5B8DEF)
         ProviderKind.DEEPSEEK -> Color(0xFF4D6BFE)
+        ProviderKind.NVIDIA_NIM -> Color(0xFF76B900)
         ProviderKind.KIMI -> Color(0xFF8B7CF6)
         ProviderKind.CUSTOM -> PocketOrange
     }
@@ -1835,6 +1835,7 @@ private fun ProviderChoiceRow(
         ProviderKind.ANTHROPIC -> "A"
         ProviderKind.LLM_ROUTER -> "OR"
         ProviderKind.DEEPSEEK -> "DS"
+        ProviderKind.NVIDIA_NIM -> "NV"
         ProviderKind.KIMI -> "K"
         ProviderKind.CUSTOM -> "<>"
     }
@@ -2066,8 +2067,11 @@ private fun ProviderCredentialsStep(
             Text(provider.title, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(5.dp))
             Text(
-                if (provider.protocol.name.startsWith("OPENAI")) "PocketForge will translate Claude Code requests for this provider."
-                else "Claude Code will connect through this API endpoint.",
+                when {
+                    provider == ProviderKind.CLAUDE -> "Enter your Claude Code setup token from 'claude setup-token' to authenticate with your subscription."
+                    provider.protocol.name.startsWith("OPENAI") -> "PocketForge will translate Claude Code requests for this provider."
+                    else -> "Claude Code will connect through this API endpoint."
+                },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -2078,52 +2082,65 @@ private fun ProviderCredentialsStep(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    OutlinedTextField(
-                        baseUrl,
-                        { onBaseUrl(it); status = null; models = emptyList() },
-                        label = { Text("Base URL") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    if (provider != ProviderKind.CLAUDE) {
+                        OutlinedTextField(
+                            baseUrl,
+                            { onBaseUrl(it); status = null; models = emptyList() },
+                            label = { Text("Base URL") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                     OutlinedTextField(
                         apiKey,
                         { onApiKey(it); status = null },
-                        label = { Text("API key") },
-                        placeholder = { Text(if (hasStoredSecret) "Saved securely — leave blank to keep it" else "Enter your API key") },
+                        label = { Text(if (provider == ProviderKind.CLAUDE) "Claude setup token" else "API key") },
+                        placeholder = {
+                            Text(
+                                if (hasStoredSecret) "Saved securely — leave blank to keep it"
+                                else if (provider == ProviderKind.CLAUDE) "Paste setup token from claude setup-token"
+                                else "Enter your API key",
+                            )
+                        },
                         supportingText = {
                             if (hasStoredSecret && apiKey.isBlank()) Text("A saved key is ready to use")
+                            else if (provider == ProviderKind.CLAUDE) Text("Run 'claude setup-token' on a machine with Claude CLI to generate a token.")
                         },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    OutlinedTextField(
-                        model,
-                        { onModel(it); status = null },
-                        label = { Text("Model name") },
-                        supportingText = { Text("Select an available model or enter an exact model ID.") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    if (provider != ProviderKind.CLAUDE) {
+                        OutlinedTextField(
+                            model,
+                            { onModel(it); status = null },
+                            label = { Text("Model name") },
+                            supportingText = { Text("Select an available model or enter an exact model ID.") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
-        item {
-            OutlinedButton(
-                onClick = {
-                    if (models.isEmpty()) discoverModels() else showModels = true
-                },
-                enabled = baseUrl.isNotBlank() && hasKey && !isDiscovering && !isValidating,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-            ) {
-                if (isDiscovering) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        if (provider != ProviderKind.CLAUDE) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        if (models.isEmpty()) discoverModels() else showModels = true
+                    },
+                    enabled = baseUrl.isNotBlank() && hasKey && !isDiscovering && !isValidating,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                ) {
+                    if (isDiscovering) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(19.dp))
                     Spacer(Modifier.width(8.dp))
+                    Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
                 }
-                Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(19.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
             }
         }
         if (status != null) {
@@ -2137,28 +2154,28 @@ private fun ProviderCredentialsStep(
         }
         item {
             Button(
-                    onClick = {
-                        scope.launch {
-                            isValidating = true
-                            status = "Checking API key, model, and Claude Code settings…"
-                            statusOk = true
-                            when (val result = onValidate(models)) {
-                                is ConnectionValidation.Success -> {
-                                    status = result.message
-                                    statusOk = true
-                                    onSave()
-                                }
-                                is ConnectionValidation.Failure -> {
-                                    status = result.message
-                                    statusOk = false
-                                }
+                onClick = {
+                    scope.launch {
+                        isValidating = true
+                        status = "Checking API key, model, and Claude Code settings…"
+                        statusOk = true
+                        when (val result = onValidate(models)) {
+                            is ConnectionValidation.Success -> {
+                                status = result.message
+                                statusOk = true
+                                onSave()
                             }
-                            isValidating = false
+                            is ConnectionValidation.Failure -> {
+                                status = result.message
+                                statusOk = false
+                            }
                         }
-                    },
-                    enabled = baseUrl.isNotBlank() && model.isNotBlank() && hasKey && !isDiscovering && !isValidating,
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                ) {
+                        isValidating = false
+                    }
+                },
+                enabled = ((provider == ProviderKind.CLAUDE && hasKey) || (baseUrl.isNotBlank() && model.isNotBlank() && hasKey)) && !isDiscovering && !isValidating,
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+            ) {
                     if (isValidating) {
                         CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(7.dp))
@@ -3154,6 +3171,7 @@ private fun WorkspaceScreen(
                     url = state.previewUrl,
                     isFullscreen = previewFullscreen,
                     onToggleFullscreen = { previewFullscreen = !previewFullscreen },
+                    onExitPreview = { selectedTab = WorkspaceTab.CHAT },
                 )
             }
         }
@@ -5277,6 +5295,7 @@ private fun PreviewTab(
     url: String?,
     isFullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
+    onExitPreview: () -> Unit = {},
 ) {
     var address by rememberSaveable(url) { mutableStateOf(if (ready) url.orEmpty() else "") }
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
@@ -5430,6 +5449,17 @@ private fun PreviewTab(
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    IconButton(
+                        onClick = onExitPreview,
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to workspace",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                     IconButton(
                         onClick = { showUrlBar = !showUrlBar },
                         modifier = Modifier.size(34.dp),

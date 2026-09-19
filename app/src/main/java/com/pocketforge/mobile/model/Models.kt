@@ -20,6 +20,7 @@ enum class ProviderKind(
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
+    NVIDIA_NIM("NVIDIA NIM", "OpenAI-compatible endpoint", ProviderProtocol.OPENAI_CHAT, "https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct", false),
     KIMI("Kimi", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.moonshot.ai/anthropic", "kimi-k2.6", true),
     CUSTOM("Custom API", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
 }
@@ -77,6 +78,26 @@ fun projectSlug(name: String): String {
 }
 
 data class QuickChatIdentity(val displayName: String, val slug: String)
+
+enum class BackgroundTaskState {
+    IDLE,
+    RUNNING,
+    COMPLETED,
+    FAILED,
+    CANCELLED;
+
+    val isActive: Boolean get() = this == RUNNING
+}
+
+data class BackgroundTask(
+    val id: String = UUID.randomUUID().toString(),
+    val projectId: String,
+    val chatId: String? = null,
+    val state: BackgroundTaskState = BackgroundTaskState.IDLE,
+    val description: String = "",
+    val startedAtMillis: Long = System.currentTimeMillis(),
+    val finishedAtMillis: Long? = null,
+)
 
 fun generateQuickChatIdentity(usedSlugs: Set<String>, random: Random = Random.Default): QuickChatIdentity {
     val adjectives = listOf("bright", "calm", "clever", "curious", "gentle", "nimble", "quiet", "swift", "wise", "bold")

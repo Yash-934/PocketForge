@@ -107,8 +107,9 @@ class ClaudeRuntimeBridge(
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
         pushForegroundProgress("Starting Claude Code…")
         val secret = secretFor(provider).orEmpty()
-        if (provider.kind != ProviderKind.CLAUDE && secret.isBlank()) {
-            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, "No API key is saved for ${provider.kind.title}."))
+        if (secret.isBlank()) {
+            val missingSecretLabel = if (provider.kind == ProviderKind.CLAUDE) "subscription setup token" else "API key"
+            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, "No $missingSecretLabel is saved for ${provider.kind.title}."))
             return@withContext sessionId
         }
 

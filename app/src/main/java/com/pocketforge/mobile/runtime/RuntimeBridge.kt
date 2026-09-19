@@ -31,7 +31,9 @@ object RuntimeLaunchConfigBuilder {
     fun build(profile: ProviderProfile, authToken: String? = null, localGatewayUrl: String? = null): RuntimeLaunchConfig {
         val environment = linkedMapOf("DISABLE_AUTOUPDATER" to "1")
         when (profile.kind.protocol) {
-            com.pocketforge.mobile.model.ProviderProtocol.CLAUDE_LOGIN -> Unit
+            com.pocketforge.mobile.model.ProviderProtocol.CLAUDE_LOGIN -> {
+                applyClaudeSubscriptionAuth(environment, authToken)
+            }
             com.pocketforge.mobile.model.ProviderProtocol.ANTHROPIC -> {
                 environment["ANTHROPIC_BASE_URL"] = profile.baseUrl.trimEnd('/')
                 environment["ANTHROPIC_MODEL"] = profile.model
@@ -78,5 +80,15 @@ object RuntimeLaunchConfigBuilder {
             arguments = listOf("-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"),
             environment = environment,
         )
+    }
+
+    private fun applyClaudeSubscriptionAuth(
+        environment: MutableMap<String, String>,
+        authToken: String?,
+    ) {
+        require(!authToken.isNullOrBlank()) { "Claude subscription setup token is missing" }
+        environment["CLAUDE_CODE_OAUTH_TOKEN"] = authToken
+        environment["ANTHROPIC_API_KEY"] = ""
+        environment["ANTHROPIC_AUTH_TOKEN"] = ""
     }
 }

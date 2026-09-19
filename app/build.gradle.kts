@@ -69,8 +69,8 @@ android {
         applicationId = "com.pocketforge.mobile"
         minSdk = 28
         targetSdk = if (playBuild) 36 else 28
-        versionCode = 5
-        versionName = "1.1.0"
+        versionCode = 6
+        versionName = "1.1.1"
         providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()?.let { versionCode = it }
         providers.gradleProperty("appVersionName").orNull?.let { versionName = it }
 

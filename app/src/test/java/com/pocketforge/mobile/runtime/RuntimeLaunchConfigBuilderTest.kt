@@ -55,4 +55,39 @@ class RuntimeLaunchConfigBuilderTest {
         assertEquals("temporary-openrouter-secret", config.environment["OPENROUTER_API_KEY"])
         assertEquals("", config.environment["ANTHROPIC_API_KEY"])
     }
+
+    @Test
+    fun claudeSubscriptionInjectsOAuthTokenAndClearsApiKeys() {
+        val config = RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.CLAUDE, "", "default", true),
+            authToken = "test-oauth-setup-token",
+        )
+
+        assertEquals("test-oauth-setup-token", config.environment["CLAUDE_CODE_OAUTH_TOKEN"])
+        assertEquals("", config.environment["ANTHROPIC_API_KEY"])
+        assertEquals("", config.environment["ANTHROPIC_AUTH_TOKEN"])
+        assertEquals("1", config.environment["DISABLE_AUTOUPDATER"])
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun claudeSubscriptionFailsWhenTokenIsMissing() {
+        RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.CLAUDE, "", "default", false),
+            authToken = null,
+        )
+    }
+
+    @Test
+    fun nvidiaNimUsesLocalFormatGatewayAndSetsSonnetModel() {
+        val config = RuntimeLaunchConfigBuilder.build(
+            ProviderProfile(ProviderKind.NVIDIA_NIM, "https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct", true),
+            authToken = "nv-secret-key",
+            localGatewayUrl = "http://127.0.0.1:45678",
+        )
+
+        assertEquals("http://127.0.0.1:45678", config.environment["ANTHROPIC_BASE_URL"])
+        assertEquals("claude-sonnet-4-6", config.environment["ANTHROPIC_MODEL"])
+        assertEquals("nv-secret-key", config.environment["ANTHROPIC_AUTH_TOKEN"])
+        assertEquals("nv-secret-key", config.environment["ANTHROPIC_API_KEY"])
+    }
 }

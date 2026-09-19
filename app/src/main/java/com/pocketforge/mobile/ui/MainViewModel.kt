@@ -1045,9 +1045,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun finishOnboarding(profile: ProviderProfile, secret: String) {
-        vault.put(profile.kind.name, secret)
+        if (secret.isNotBlank()) {
+            vault.put(profile.kind.name, secret)
+        }
         val saved = profile.copy(
-            hasSecret = secret.isNotBlank() || vault.contains(profile.kind.name) || profile.kind == ProviderKind.CLAUDE,
+            hasSecret = secret.isNotBlank() || vault.contains(profile.kind.name),
         )
         preferences.saveProvider(saved)
         preferences.onboardingComplete = true
@@ -1114,6 +1116,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Uninstalls one development stack on demand (Settings) with live progress. */
+    fun removeDevStack(stack: DevStack) {
+        if (_state.value.devStackInstalling != null) return
+        if (stack == DevStack.WEB) return
+        _state.update {
+            it.copy(
+                devStackInstalling = stack,
+                devStackMessage = "Removing ${stack.label}…",
+                devStackProgress = 0f,
+                devStackBytes = null,
+            )
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                installer.removeStack(stack) { progress ->
+                    _state.update { current ->
+                        current.copy(
+                            devStackMessage = progress.message,
+                            devStackProgress = progress.fraction.coerceIn(0f, 1f),
+                        )
+                    }
+                }
+            }
+            _state.update { current ->
+                current.copy(
+                    devStackInstalling = null,
+                    installedDevStacks = if (result.isSuccess) current.installedDevStacks - stack else current.installedDevStacks,
+                    devStackProgress = 0f,
+                    devStackBytes = null,
+                    devStackMessage = result.fold(
+                        onSuccess = { "${stack.label} tools removed" },
+                        onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: "Could not remove ${stack.label}" },
+                    ),
+                )
+            }
+        }
+    }
+
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
         return providerApi.discoverModels(profile.baseUrl, key, profile.kind.protocol)
@@ -1125,6 +1165,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         models: List<com.pocketforge.mobile.network.DiscoveredModel>,
     ): ConnectionValidation {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
+        if (profile.kind == ProviderKind.CLAUDE) {
+            return if (key.isNotBlank()) {
+                ConnectionValidation.Success("Claude subscription setup token is saved.")
+            } else {
+                ConnectionValidation.Failure("Please enter your Claude subscription setup token.")
+            }
+        }
         return providerApi.validate(profile.baseUrl, profile.model, key, profile.kind.protocol, models)
     }
 

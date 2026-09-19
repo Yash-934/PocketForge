@@ -53,7 +53,9 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Whatshot
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -67,6 +69,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -114,6 +117,7 @@ fun SettingsScreen(
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
     onInstallDevStack: (DevStack) -> Unit = {},
+    onRemoveDevStack: (DevStack) -> Unit = {},
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
@@ -135,6 +139,7 @@ fun SettingsScreen(
     var statusOk by remember { mutableStateOf(false) }
     var terminalCleared by remember { mutableStateOf(false) }
     var showReliabilityHelp by rememberSaveable { mutableStateOf(false) }
+    var stackToRemove by remember { mutableStateOf<DevStack?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val filteredModels = remember(models, modelSearch) {
         val query = modelSearch.trim()
@@ -485,13 +490,26 @@ fun SettingsScreen(
                             }
                             when {
                                 installing -> Text("${(state.devStackProgress * 100).toInt()}%", color = PocketOrange, fontWeight = FontWeight.Bold)
-                                installed -> Text("Installed", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                installed && stack == DevStack.WEB -> Text("Core", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                installed -> {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Installed", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Spacer(Modifier.width(8.dp))
+                                        TextButton(
+                                            onClick = { stackToRemove = stack },
+                                            enabled = state.devStackInstalling == null,
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        ) {
+                                            Text("Remove", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                                        }
+                                    }
+                                }
                                 else -> OutlinedButton(onClick = { onInstallDevStack(stack) }, enabled = state.devStackInstalling == null) { Text("Add") }
                             }
                         }
                         if (installing) {
                             LinearProgressIndicator(progress = { state.devStackProgress }, modifier = Modifier.fillMaxWidth())
-                            Text(state.devStackMessage ?: "Installing…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            Text(state.devStackMessage ?: "Working…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         }
                         if (index != DevStack.entries.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     }
@@ -607,6 +625,32 @@ fun SettingsScreen(
             }
         }
     }
+
+    stackToRemove?.let { stack ->
+        AlertDialog(
+            onDismissRequest = { stackToRemove = null },
+            title = { Text("Remove ${stack.label}?") },
+            text = {
+                Text("This will remove the installed ${stack.label} toolchain to free up storage. Your project files will remain completely intact.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        stackToRemove = null
+                        onRemoveDevStack(stack)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { stackToRemove = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -718,18 +762,23 @@ private fun ConnectionSettings(
         }
     }
 
-    OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(model, onModel, label = { Text("Model name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
-        if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-        else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
-        Spacer(Modifier.width(7.dp))
-        Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
+    if (selectedKind != ProviderKind.CLAUDE) {
+        OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(model, onModel, label = { Text("Model name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+            if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
+        }
     }
     OutlinedTextField(
         apiKey,
         onApiKey,
-        label = { Text("API key") },
+        label = { Text(if (selectedKind == ProviderKind.CLAUDE) "Claude setup token" else "API key") },
+        supportingText = if (selectedKind == ProviderKind.CLAUDE) {
+            { Text("Enter token from 'claude setup-token' on your desktop/CLI.") }
+        } else null,
         singleLine = true,
         visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -743,14 +792,14 @@ private fun ConnectionSettings(
     }
     Button(
         onClick = onValidate,
-        enabled = baseUrl.isNotBlank() && model.isNotBlank() && apiKey.isNotBlank() && !isDiscovering && !isValidating,
+        enabled = ((selectedKind == ProviderKind.CLAUDE && apiKey.isNotBlank()) || (baseUrl.isNotBlank() && model.isNotBlank() && apiKey.isNotBlank())) && !isDiscovering && !isValidating,
         modifier = Modifier.fillMaxWidth().height(52.dp),
     ) {
         if (isValidating) {
             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(8.dp))
         }
-        Text(if (isValidating) "Checking connection" else "Test connection and save")
+        Text(if (isValidating) "Checking connection" else if (selectedKind == ProviderKind.CLAUDE) "Save setup token" else "Test connection and save")
     }
 }
 
@@ -917,7 +966,7 @@ private fun DebugUpdateChannelSection(
         onClick = { expanded = !expanded },
     ) {
         Text(
-            "Debug builds only. Paste the temporary manifest URL from Cloudflare Tunnel, ngrok, or any HTTPS server hosting mobile-harness-update.json and a newer APK.",
+            "Debug builds only. Paste the temporary manifest URL from Cloudflare Tunnel, ngrok, or any HTTPS server hosting pocketforge-update.json and a newer APK.",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -926,7 +975,7 @@ private fun DebugUpdateChannelSection(
             value = url,
             onValueChange = { url = it },
             label = { Text("Manifest URL") },
-            placeholder = { Text("https://your-tunnel.example/mobile-harness-update.json") },
+            placeholder = { Text("https://your-tunnel.example/pocketforge-update.json") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             modifier = Modifier.fillMaxWidth(),
