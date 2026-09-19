@@ -13,11 +13,12 @@ val testSecrets = Properties().apply {
 val playBuild = providers.gradleProperty("playBuild").orNull?.toBoolean() == true ||
     providers.gradleProperty("playFeasibility").orNull?.toBoolean() == true
 val privacyPolicyUrl = providers.gradleProperty("privacyPolicyUrl").orNull
-    ?: "https://github.com/techjarves/Mobile-Harness/blob/main/PRIVACY.md"
+    ?: "https://github.com/pocketforge/pocketforge/blob/main/PRIVACY.md"
 val runtimeReleaseBaseUrl =
-    "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4"
+    "https://github.com/pocketforge/pocketforge/releases/download/runtime-2026.09.4"
 val appUpdateManifestUrl =
-    "https://github.com/techjarves/Mobile-Harness/releases/latest/download/mobile-harness-update.json"
+    providers.gradleProperty("appUpdateManifestUrl").orNull
+        ?: "https://github.com/pocketforge/pocketforge/releases/latest/download/pocketforge-update.json"
 
 fun buildConfigString(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""

@@ -20,7 +20,7 @@ enum class ProviderKind(
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
-    NVIDIA_NIM("NVIDIA NIM", "OpenAI-compatible endpoint", ProviderProtocol.OPENAI_CHAT, "https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct", false),
+    NVIDIA_NIM("NVIDIA NIM", "OpenAI-compatible models hosted by NVIDIA", ProviderProtocol.OPENAI_CHAT, "https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct", true),
     KIMI("Kimi", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.moonshot.ai/anthropic", "kimi-k2.6", true),
     CUSTOM("Custom API", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
 }

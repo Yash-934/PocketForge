@@ -58,4 +58,4 @@ This policy may be updated as PocketForge changes. Material changes will be refl
 
 ## Contact
 
-For privacy questions or requests, open an issue at [github.com/techjarves/Mobile-Harness/issues](https://github.com/techjarves/Mobile-Harness/issues).
+For privacy questions or requests, open an issue at [github.com/pocketforge/pocketforge/issues](https://github.com/pocketforge/pocketforge/issues).
