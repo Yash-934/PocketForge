@@ -14,8 +14,8 @@ val playBuild = providers.gradleProperty("playBuild").orNull?.toBoolean() == tru
     providers.gradleProperty("playFeasibility").orNull?.toBoolean() == true
 val privacyPolicyUrl = providers.gradleProperty("privacyPolicyUrl").orNull
     ?: "https://github.com/pocketforge/pocketforge/blob/main/PRIVACY.md"
-val runtimeReleaseBaseUrl =
-    "https://github.com/pocketforge/pocketforge/releases/download/runtime-2026.09.4"
+val runtimeReleaseBaseUrl = providers.gradleProperty("runtimeReleaseBaseUrl").orNull
+    ?: "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4"
 val appUpdateManifestUrl =
     providers.gradleProperty("appUpdateManifestUrl").orNull
         ?: "https://github.com/pocketforge/pocketforge/releases/latest/download/pocketforge-update.json"

@@ -528,12 +528,23 @@ class RuntimeInstaller(private val context: Context) {
             return destination
         }
 
-        val url = "${BuildConfig.RUNTIME_RELEASE_BASE_URL}/${bundle.fileName}"
-        downloadVerified(url, destination, bundle.sha256) { downloaded, total ->
-            val ratio = if (total > 0) downloaded.toFloat() / total else 0f
-            onProgress(RuntimeInstallProgress("Downloading ${bundle.label} bundle", from + ratio * (to - from), downloaded, total.takeIf { it > 0 }))
+        val primaryUrl = "${BuildConfig.RUNTIME_RELEASE_BASE_URL}/${bundle.fileName}"
+        val fallbackUrl = "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4/${bundle.fileName}"
+        val urlsToTry = if (primaryUrl == fallbackUrl) listOf(primaryUrl) else listOf(primaryUrl, fallbackUrl)
+
+        var lastError: Throwable? = null
+        for (url in urlsToTry) {
+            try {
+                downloadVerified(url, destination, bundle.sha256) { downloaded, total ->
+                    val ratio = if (total > 0) downloaded.toFloat() / total else 0f
+                    onProgress(RuntimeInstallProgress("Downloading ${bundle.label} bundle", from + ratio * (to - from), downloaded, total.takeIf { it > 0 }))
+                }
+                return destination
+            } catch (e: Throwable) {
+                lastError = e
+            }
         }
-        return destination
+        throw (lastError ?: IllegalStateException("Could not download ${bundle.label} bundle"))
     }
 
     private suspend fun installZipAsset(
