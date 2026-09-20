@@ -226,6 +226,10 @@ class RuntimeInstaller(private val context: Context) {
         agent: com.pocketforge.mobile.model.AgentKind,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
+        if (!isInstalled()) {
+            ensureInstalled(agent = agent, onProgress = onProgress)
+            return
+        }
         val runtime = installedRuntime()
         when (agent) {
             com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE -> ensureClaudeInstalled(runtime.proot, 0.05f, onProgress)
@@ -539,8 +543,12 @@ class RuntimeInstaller(private val context: Context) {
             from = fraction,
             to = 0.995f,
             onProgress = onProgress,
-            forceEmbedded = true,
+            forceEmbedded = false,
         )
+        val agyBinary = File(rootfs, AGY_GUEST_PATH.removePrefix("/"))
+        if (agyBinary.exists()) {
+            agyBinary.setExecutable(true, false)
+        }
         verifyGuest(proot, "$AGY_GUEST_PATH --version", "Antigravity CLI verification failed")
         agyMarker.writeText(AGY_VERSION)
         require(isAgentInstalled(com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY)) {
@@ -931,7 +939,11 @@ class RuntimeInstaller(private val context: Context) {
     ): File {
         downloads.mkdirs()
         val destination = File(downloads, bundle.fileName)
-        val useEmbedded = preferEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES
+        val assetExists = runCatching {
+            context.assets.open("runtime/${bundle.fileName}").use { }
+            true
+        }.getOrDefault(false)
+        val useEmbedded = (preferEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES) && assetExists
         if (useEmbedded) {
             onProgress(RuntimeInstallProgress("Loading ${bundle.label} bundle", from, 0, bundle.compressedBytes))
             val temporary = File(downloads, "${bundle.fileName}.part")
