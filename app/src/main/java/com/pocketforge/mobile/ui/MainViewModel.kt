@@ -896,10 +896,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             toastMessage = "APK built. Complete Android's install prompt.",
                         )
                     }
+                    refreshProjectFiles()
                 }
             }.onFailure { error ->
                 withContext(Dispatchers.Main) {
                     _state.update { it.copy(androidBuildRunning = false, androidBuildMessage = null, toastMessage = error.message ?: "Could not build APK") }
+                    refreshProjectFiles()
                 }
             }
         }
@@ -2920,39 +2922,256 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
 
+    private fun isIntermediateOrCacheDir(dirName: String, relativePath: String): Boolean {
+        val name = dirName.lowercase()
+        if (name in setOf(".git", ".gradle", ".idea", ".cache", "__pycache__", ".pytest_cache", ".cargo")) return true
+        if (name in setOf("intermediates", "tmp", ".transforms", "kotlin-classes", "extracted-include-protos", "incremental")) return true
+        if (relativePath.contains("build/intermediates") || relativePath.contains("build/tmp")) return true
+        return false
+    }
+
     private fun readWorkspace(project: Project): List<WorkspaceEntry> {
         val root = projectWorkspaceRoot(project)
         if (!root.isDirectory) return emptyList()
+
+        // 1. Recover any loose files generated directly into /workspace inside PRoot
+        if (installer.isInstalled()) {
+            runCatching {
+                val rootfs = installer.installedRuntime().rootfs
+                val prootWorkspace = File(rootfs, "workspace")
+                if (prootWorkspace.isDirectory) {
+                    prootWorkspace.listFiles()?.filter { it.isFile }?.forEach { looseFile ->
+                        val target = File(root, looseFile.name)
+                        if (!target.exists()) {
+                            looseFile.copyTo(target, overwrite = true)
+                            looseFile.delete()
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Also check if rootPath was nested and any loose files exist in the base project folder
+        if (project.rootPath.isNotBlank()) {
+            runCatching {
+                val base = File(getApplication<Application>().filesDir, "workspaces/${project.id}")
+                if (base.isDirectory) {
+                    base.listFiles()?.filter { it.isFile }?.forEach { baseFile ->
+                        val target = File(root, baseFile.name)
+                        if (!target.exists()) {
+                            baseFile.copyTo(target, overwrite = true)
+                            baseFile.delete()
+                        }
+                    }
+                }
+            }
+        }
+
         val rootPath = root.canonicalFile.toPath()
-        return root.walkTopDown()
+        val entries = mutableListOf<WorkspaceEntry>()
+        val seenPaths = mutableSetOf<String>()
+
+        // 3. First, prioritize all artifacts (.apk, .zip, .tar.gz, .aar) anywhere in the project so they NEVER get dropped
+        root.walkTopDown()
+            .maxDepth(12)
+            .filter { file ->
+                file.isFile && (
+                    file.name.endsWith(".apk", ignoreCase = true) ||
+                    file.name.endsWith(".zip", ignoreCase = true) ||
+                    file.name.endsWith(".tar.gz", ignoreCase = true) ||
+                    file.name.endsWith(".aar", ignoreCase = true)
+                )
+            }
+            .forEach { file ->
+                val relative = file.relativeTo(root).invariantSeparatorsPath
+                if (!isClaudeRuntimeMetadata(relative) && seenPaths.add(relative)) {
+                    var currentDir = file.parentFile
+                    while (currentDir != null && currentDir != root && currentDir.canonicalFile.toPath().startsWith(rootPath)) {
+                        val dirRel = currentDir.relativeTo(root).invariantSeparatorsPath
+                        if (seenPaths.add(dirRel)) {
+                            entries.add(
+                                WorkspaceEntry(
+                                    path = dirRel,
+                                    name = currentDir.name,
+                                    isDirectory = true,
+                                    depth = dirRel.count { it == '/' },
+                                    sizeBytes = 0L,
+                                )
+                            )
+                        }
+                        currentDir = currentDir.parentFile
+                    }
+                    entries.add(
+                        WorkspaceEntry(
+                            path = relative,
+                            name = file.name,
+                            isDirectory = false,
+                            depth = relative.count { it == '/' },
+                            sizeBytes = file.length(),
+                        )
+                    )
+                }
+            }
+
+        // 4. Walk workspace files, skipping heavy intermediate/cache directories
+        root.walkTopDown()
             .maxDepth(12)
             .onEnter { directory ->
                 val relative = if (directory == root) "" else directory.relativeTo(root).invariantSeparatorsPath
-                directory == root || (!isClaudeRuntimeMetadata(relative) &&
-                    !Files.isSymbolicLink(directory.toPath()) &&
-                    runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
-                    )
+                if (directory == root) return@onEnter true
+                if (isClaudeRuntimeMetadata(relative)) return@onEnter false
+                if (Files.isSymbolicLink(directory.toPath())) return@onEnter false
+                if (!runCatching { directory.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)) return@onEnter false
+
+                // Treat node_modules as a single directory entry without descending into its contents
+                if (directory.name.equals("node_modules", ignoreCase = true)) {
+                    if (seenPaths.add(relative)) {
+                        entries.add(
+                            WorkspaceEntry(
+                                path = relative,
+                                name = directory.name,
+                                isDirectory = true,
+                                depth = relative.count { it == '/' },
+                                sizeBytes = 0L,
+                            )
+                        )
+                    }
+                    return@onEnter false
+                }
+
+                if (isIntermediateOrCacheDir(directory.name, relative)) return@onEnter false
+                true
             }
             .drop(1)
             .filter { file ->
                 val relative = file.relativeTo(root).invariantSeparatorsPath
                 !isClaudeRuntimeMetadata(relative) &&
                     !Files.isSymbolicLink(file.toPath()) &&
-                    runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
+                    runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) &&
+                    !isIntermediateOrCacheDir(file.name, relative)
             }
             .take(MAX_VISIBLE_WORKSPACE_ENTRIES)
-            .map { file ->
+            .forEach { file ->
                 val relative = file.relativeTo(root).invariantSeparatorsPath
-                WorkspaceEntry(
-                    path = relative,
-                    name = file.name,
-                    isDirectory = file.isDirectory,
-                    depth = relative.count { it == '/' },
-                    sizeBytes = if (file.isFile) file.length() else 0,
+                if (seenPaths.add(relative)) {
+                    entries.add(
+                        WorkspaceEntry(
+                            path = relative,
+                            name = file.name,
+                            isDirectory = file.isDirectory,
+                            depth = relative.count { it == '/' },
+                            sizeBytes = if (file.isFile) file.length() else 0L,
+                        )
+                    )
+                }
+            }
+
+        return entries.sortedWith(
+            compareBy<WorkspaceEntry> { it.path.lowercase() }.thenByDescending { it.isDirectory }
+        )
+    }
+
+    fun installApk(entry: WorkspaceEntry) {
+        val project = _state.value.activeProject ?: return
+        val file = File(projectWorkspaceRoot(project), entry.path)
+        if (!file.isFile || !file.name.endsWith(".apk", ignoreCase = true)) {
+            _state.update { it.copy(toastMessage = "Selected file is not an APK.") }
+            return
+        }
+        runCatching {
+            AndroidAppInstaller.install(getApplication(), file)
+            _state.update { it.copy(toastMessage = "Starting installation for ${file.name}...") }
+        }.onFailure { error ->
+            _state.update { it.copy(toastMessage = "Could not install APK: ${error.message}") }
+        }
+    }
+
+    fun shareFile(entry: WorkspaceEntry) {
+        val project = _state.value.activeProject ?: return
+        val file = File(projectWorkspaceRoot(project), entry.path)
+        if (!file.isFile) return
+        runCatching {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                getApplication(),
+                "${getApplication<Application>().packageName}.files",
+                file
+            )
+            val mimeType = when {
+                file.name.endsWith(".apk", ignoreCase = true) -> "application/vnd.android.package-archive"
+                file.name.endsWith(".zip", ignoreCase = true) -> "application/zip"
+                file.name.endsWith(".tar.gz", ignoreCase = true) -> "application/gzip"
+                file.name.endsWith(".json", ignoreCase = true) -> "application/json"
+                file.name.endsWith(".txt", ignoreCase = true) -> "text/plain"
+                file.name.endsWith(".md", ignoreCase = true) -> "text/markdown"
+                else -> "application/octet-stream"
+            }
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TITLE, file.name)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(intent, "Share ${file.name}").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            getApplication<Application>().startActivity(chooser)
+        }.onFailure { error ->
+            _state.update { it.copy(toastMessage = "Could not share file: ${error.message}") }
+        }
+    }
+
+    fun extractZipInWorkspace(entry: WorkspaceEntry) {
+        val project = _state.value.activeProject ?: return
+        val file = File(projectWorkspaceRoot(project), entry.path)
+        if (!file.isFile || !file.name.endsWith(".zip", ignoreCase = true)) return
+        viewModelScope.launch {
+            _state.update { it.copy(filesLoading = true) }
+            val (count, err) = withContext(Dispatchers.IO) {
+                runCatching {
+                    val root = projectWorkspaceRoot(project).canonicalFile
+                    val targetDir = file.parentFile ?: root
+                    var extracted = 0
+                    ZipInputStream(file.inputStream().buffered()).use { zip ->
+                        while (true) {
+                            val zipEntry = zip.nextEntry ?: break
+                            val out = File(targetDir, zipEntry.name).canonicalFile
+                            require(out.toPath().startsWith(root.toPath())) {
+                                "Unsafe entry in ZIP: ${zipEntry.name}"
+                            }
+                            if (zipEntry.isDirectory) {
+                                out.mkdirs()
+                            } else {
+                                out.parentFile?.mkdirs()
+                                out.outputStream().use { fos -> zip.copyTo(fos) }
+                                extracted++
+                            }
+                            zip.closeEntry()
+                        }
+                    }
+                    Pair(extracted, null)
+                }.getOrElse { Pair(0, it.message) }
+            }
+            refreshProjectFiles()
+            _state.update {
+                it.copy(
+                    toastMessage = if (err == null) "Extracted $count files from ${file.name}" else "Failed to extract ZIP: $err"
                 )
             }
-            .sortedWith(compareBy<WorkspaceEntry> { it.path.lowercase() }.thenByDescending { it.isDirectory })
-            .toList()
+        }
+    }
+
+    fun deleteWorkspaceFile(entry: WorkspaceEntry) {
+        val project = _state.value.activeProject ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val file = File(projectWorkspaceRoot(project), entry.path)
+                if (file.exists()) {
+                    if (file.isDirectory) file.deleteRecursively() else file.delete()
+                }
+            }
+            refreshProjectFiles()
+            _state.update { it.copy(toastMessage = "Deleted ${entry.name}") }
+        }
     }
 
     private fun isClaudeRuntimeMetadata(relativePath: String): Boolean {

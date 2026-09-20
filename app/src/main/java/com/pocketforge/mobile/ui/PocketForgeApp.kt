@@ -355,6 +355,10 @@ fun PocketForgeApp(viewModel: MainViewModel = viewModel()) {
             onRemoveAttachment = viewModel::removePendingAttachment,
             onOpenAttachment = viewModel::openChatAttachment,
             onBuildAndRunAndroid = viewModel::buildAndRunAndroidApp,
+            onInstallApk = viewModel::installApk,
+            onShareFile = viewModel::shareFile,
+            onExtractZip = viewModel::extractZipInWorkspace,
+            onDeleteFile = viewModel::deleteWorkspaceFile,
         )
         else -> RootScreenHost(state, viewModel, projectsListState)
     }
@@ -3891,6 +3895,10 @@ private fun WorkspaceScreen(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onBuildAndRunAndroid: () -> Unit,
+    onInstallApk: (WorkspaceEntry) -> Unit,
+    onShareFile: (WorkspaceEntry) -> Unit,
+    onExtractZip: (WorkspaceEntry) -> Unit,
+    onDeleteFile: (WorkspaceEntry) -> Unit,
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
@@ -4129,6 +4137,10 @@ private fun WorkspaceScreen(
                     onExport = {
                         exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
                     },
+                    onInstallApk = onInstallApk,
+                    onShareFile = onShareFile,
+                    onExtractZip = onExtractZip,
+                    onDeleteFile = onDeleteFile,
                 )
                 WorkspaceTab.TERMINAL -> TerminalScreen(
                     lines = state.projectTerminalLines,
@@ -4337,17 +4349,48 @@ private fun FilesTab(
     onOpenFile: (WorkspaceEntry) -> Unit,
     onUseSuggestedProjectRoot: () -> Unit,
     onExport: () -> Unit,
+    onInstallApk: (WorkspaceEntry) -> Unit,
+    onShareFile: (WorkspaceEntry) -> Unit,
+    onExtractZip: (WorkspaceEntry) -> Unit,
+    onDeleteFile: (WorkspaceEntry) -> Unit,
 ) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var expandedDirectories by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    LaunchedEffect(files.map { it.path }) {
-        val directories = files.asSequence().filter { it.isDirectory }.map { it.path }.toSet()
-        expandedDirectories = expandedDirectories.filter { it in directories }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
+    var selectedFileForAction by remember { mutableStateOf<WorkspaceEntry?>(null) }
+
+    val artifacts = remember(files) {
+        files.filter { !it.isDirectory && (
+            it.name.endsWith(".apk", ignoreCase = true) ||
+            it.name.endsWith(".zip", ignoreCase = true) ||
+            it.name.endsWith(".tar.gz", ignoreCase = true) ||
+            it.name.endsWith(".aar", ignoreCase = true)
+        ) }
     }
+
+    LaunchedEffect(files) {
+        val directories = files.asSequence().filter { it.isDirectory }.map { it.path }.toSet()
+        val artifactParents = artifacts.flatMap { artifact ->
+            val parts = artifact.path.split('/')
+            (1 until parts.size).map { depth -> parts.take(depth).joinToString("/") }
+        }.filter { it in directories }
+        expandedDirectories = (expandedDirectories.filter { it in directories } + artifactParents).distinct()
+    }
+
     val expandedSet = expandedDirectories.toSet()
-    val visibleFiles = files.filter { entry ->
-        val segments = entry.path.split('/')
-        segments.size == 1 || (1 until segments.size).all { depth ->
-            segments.take(depth).joinToString("/") in expandedSet
+    val visibleFiles = if (searchQuery.isNotBlank()) {
+        files.filter { entry ->
+            entry.name.contains(searchQuery.trim(), ignoreCase = true) ||
+                entry.path.contains(searchQuery.trim(), ignoreCase = true)
+        }
+    } else {
+        files.filter { entry ->
+            val segments = entry.path.split('/')
+            segments.size == 1 || (1 until segments.size).all { depth ->
+                segments.take(depth).joinToString("/") in expandedSet
+            }
         }
     }
     val directChildCounts = files.filter { candidate ->
@@ -4365,35 +4408,181 @@ private fun FilesTab(
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                 ),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "Files",
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (expandedDirectories.isNotEmpty()) {
-                        TextButton(onClick = { expandedDirectories = emptyList() }) {
-                            Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(3.dp))
-                            Text("Collapse all", fontSize = 11.sp)
+                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Files",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        IconButton(onClick = {
+                            showSearch = !showSearch
+                            if (!showSearch) searchQuery = ""
+                        }) {
+                            Icon(
+                                Icons.Default.Search,
+                                "Search files",
+                                tint = if (showSearch) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (expandedDirectories.isNotEmpty() && searchQuery.isBlank()) {
+                            TextButton(onClick = { expandedDirectories = emptyList() }) {
+                                Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(17.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text("Collapse", fontSize = 11.sp)
+                            }
+                        }
+                        if (!loading && files.any { !it.isDirectory }) {
+                            IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
+                        }
+                        if (loading) {
+                            CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
                         }
                     }
-                    if (!loading && files.any { !it.isDirectory }) {
-                        IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
-                    }
-                    if (loading) {
-                        CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
+                    if (showSearch) {
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Filter files (e.g. apk, zip, src)...", fontSize = 13.sp) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                            leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(Icons.Default.Close, "Clear search", Modifier.size(18.dp))
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                        )
                     }
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
         }
+
+        if (artifacts.isNotEmpty() && searchQuery.isBlank()) {
+            item(key = "generated-artifacts-header") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Android, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Generated Builds & Archives (${artifacts.size})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        artifacts.forEach { artifact ->
+                            val isApk = artifact.name.endsWith(".apk", ignoreCase = true)
+                            val isZip = artifact.name.endsWith(".zip", ignoreCase = true) || artifact.name.endsWith(".tar.gz", ignoreCase = true)
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                            ) {
+                                Column(
+                                    Modifier.fillMaxWidth().padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            if (isApk) Icons.Default.Android else Icons.Default.Folder,
+                                            null,
+                                            tint = if (isApk) PocketGreen else PocketOrange,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(artifact.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
+                                            Text(
+                                                "${artifact.path.substringBeforeLast('/', "(root)")}  •  ${formatFileSize(artifact.sizeBytes)}",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (isApk) {
+                                            Button(
+                                                onClick = { onInstallApk(artifact) },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                modifier = Modifier.height(30.dp),
+                                            ) {
+                                                Icon(Icons.Default.Android, null, Modifier.size(14.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Install APK", fontSize = 11.sp)
+                                            }
+                                            Spacer(Modifier.width(6.dp))
+                                        }
+                                        if (isZip) {
+                                            Button(
+                                                onClick = { onExtractZip(artifact) },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                modifier = Modifier.height(30.dp),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                                ),
+                                            ) {
+                                                Text("Extract", fontSize = 11.sp)
+                                            }
+                                            Spacer(Modifier.width(6.dp))
+                                        }
+                                        OutlinedButton(
+                                            onClick = { onShareFile(artifact) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(30.dp),
+                                        ) {
+                                            Text("Share", fontSize = 11.sp)
+                                        }
+                                        Spacer(Modifier.width(4.dp))
+                                        IconButton(
+                                            onClick = {
+                                                val parts = artifact.path.split('/')
+                                                val parentParts = (1 until parts.size).map { depth -> parts.take(depth).joinToString("/") }
+                                                expandedDirectories = (expandedDirectories + parentParts).distinct()
+                                            },
+                                            modifier = Modifier.size(30.dp),
+                                        ) {
+                                            Icon(Icons.Default.Folder, "Locate in folder", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+
         if (suggestedProjectRoot != null) {
             item(key = "suggested-project-root") {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
@@ -4414,6 +4603,9 @@ private fun FilesTab(
             item { EmptyState(Icons.Default.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
         }
         items(visibleFiles, key = { it.path }) { entry ->
+            val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
+            val isZip = !entry.isDirectory && (entry.name.endsWith(".zip", ignoreCase = true) || entry.name.endsWith(".tar.gz", ignoreCase = true))
+
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -4424,12 +4616,14 @@ private fun FilesTab(
                             } else {
                                 expandedDirectories + entry.path
                             }
+                        } else if (isApk || isZip) {
+                            selectedFileForAction = entry
                         } else {
                             onOpenFile(entry)
                         }
                     }
-                    .padding(start = (entry.depth * 20).dp)
-                    .padding(vertical = 10.dp),
+                    .padding(start = if (searchQuery.isNotBlank()) 0.dp else (entry.depth * 20).dp)
+                    .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (entry.isDirectory) {
@@ -4442,32 +4636,195 @@ private fun FilesTab(
                     Spacer(Modifier.width(5.dp))
                 }
                 Icon(
-                    if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
+                    when {
+                        entry.isDirectory -> Icons.Default.Folder
+                        isApk -> Icons.Default.Android
+                        isZip -> Icons.Default.Folder
+                        else -> Icons.Default.Description
+                    },
                     null,
-                    tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = when {
+                        entry.isDirectory -> PocketOrange
+                        isApk -> PocketGreen
+                        isZip -> PocketOrange
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
                 Spacer(Modifier.width(11.dp))
-                Text(
-                    if (entry.isDirectory) "${entry.name} (${directChildCounts[entry.path] ?: 0})" else entry.name,
-                    Modifier.weight(1f),
-                    color = if (!entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                )
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (entry.isDirectory) "${entry.name} (${directChildCounts[entry.path] ?: 0})" else entry.name,
+                            color = when {
+                                isApk -> PocketGreen
+                                isZip -> PocketOrange
+                                !entry.isDirectory -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                            fontWeight = if (isApk || isZip) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                        )
+                        if (isApk || isZip) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = (if (isApk) PocketGreen else PocketOrange).copy(alpha = 0.15f),
+                            ) {
+                                Text(
+                                    if (isApk) "APK" else "ZIP",
+                                    color = if (isApk) PocketGreen else PocketOrange,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
+                    if (searchQuery.isNotBlank() && !entry.isDirectory) {
+                        Text(entry.path, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    }
+                }
                 if (!entry.isDirectory) {
                     Spacer(Modifier.width(8.dp))
                     Text(formatFileSize(entry.sizeBytes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(4.dp))
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    IconButton(
+                        onClick = { selectedFileForAction = entry },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            "File options",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
             if (!entry.isDirectory) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), modifier = Modifier.padding(start = (entry.depth * 20 + 42).dp))
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                    modifier = Modifier.padding(start = if (searchQuery.isNotBlank()) 32.dp else (entry.depth * 20 + 36).dp)
+                )
             }
         }
+    }
+
+    if (selectedFileForAction != null) {
+        val entry = selectedFileForAction!!
+        val isApk = entry.name.endsWith(".apk", ignoreCase = true)
+        val isZip = entry.name.endsWith(".zip", ignoreCase = true) || entry.name.endsWith(".tar.gz", ignoreCase = true)
+
+        AlertDialog(
+            onDismissRequest = { selectedFileForAction = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        when {
+                            isApk -> Icons.Default.Android
+                            isZip -> Icons.Default.Folder
+                            else -> Icons.Default.Description
+                        },
+                        null,
+                        tint = when {
+                            isApk -> PocketGreen
+                            isZip -> PocketOrange
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(entry.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text(
+                            "${entry.path}  •  ${formatFileSize(entry.sizeBytes)}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (isApk) {
+                        Button(
+                            onClick = {
+                                selectedFileForAction = null
+                                onInstallApk(entry)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Android, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Install APK")
+                        }
+                    }
+                    if (isZip) {
+                        Button(
+                            onClick = {
+                                selectedFileForAction = null
+                                onExtractZip(entry)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Extract ZIP here")
+                        }
+                    }
+                    if (!isApk && !isZip) {
+                        OutlinedButton(
+                            onClick = {
+                                selectedFileForAction = null
+                                onOpenFile(entry)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Description, null, Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("View / Edit file")
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            selectedFileForAction = null
+                            onShareFile(entry)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Share / Export file")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(entry.path))
+                            selectedFileForAction = null
+                            Toast.makeText(context, "Path copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Default.ContentCopy, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Copy relative path")
+                    }
+                    TextButton(
+                        onClick = {
+                            selectedFileForAction = null
+                            onDeleteFile(entry)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    ) {
+                        Icon(Icons.Default.Delete, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Delete file")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { selectedFileForAction = null }) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
 
