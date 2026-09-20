@@ -75,7 +75,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Android
@@ -112,6 +114,13 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -121,6 +130,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilledTonalButton
+import com.pocketforge.mobile.model.BuildArtifact
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
@@ -355,10 +367,13 @@ fun PocketForgeApp(viewModel: MainViewModel = viewModel()) {
             onRemoveAttachment = viewModel::removePendingAttachment,
             onOpenAttachment = viewModel::openChatAttachment,
             onBuildAndRunAndroid = viewModel::buildAndRunAndroidApp,
+            onDeleteFiles = viewModel::deleteFiles,
+            onRenameFile = viewModel::renameFile,
+            onCopyFiles = viewModel::copyFiles,
+            onMoveFiles = viewModel::moveFiles,
+            onExportSingleFile = viewModel::exportSingleFile,
             onInstallApk = viewModel::installApk,
             onShareFile = viewModel::shareFile,
-            onExtractZip = viewModel::extractZipInWorkspace,
-            onDeleteFile = viewModel::deleteWorkspaceFile,
         )
         else -> RootScreenHost(state, viewModel, projectsListState)
     }
@@ -3895,10 +3910,13 @@ private fun WorkspaceScreen(
     onRemoveAttachment: (String) -> Unit,
     onOpenAttachment: (ChatAttachment) -> Unit,
     onBuildAndRunAndroid: () -> Unit,
-    onInstallApk: (WorkspaceEntry) -> Unit,
-    onShareFile: (WorkspaceEntry) -> Unit,
-    onExtractZip: (WorkspaceEntry) -> Unit,
-    onDeleteFile: (WorkspaceEntry) -> Unit,
+    onDeleteFiles: (List<String>) -> Unit = {},
+    onRenameFile: (String, String) -> Unit = { _, _ -> },
+    onCopyFiles: (List<String>, String) -> Unit = { _, _ -> },
+    onMoveFiles: (List<String>, String) -> Unit = { _, _ -> },
+    onExportSingleFile: (String, Uri) -> Unit = { _, _ -> },
+    onInstallApk: (String) -> Unit = {},
+    onShareFile: (String) -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
@@ -3907,6 +3925,17 @@ private fun WorkspaceScreen(
     val exportProjectLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
         onResult = { uri -> if (uri != null) onExportProject(uri) },
+    )
+    var pendingExportPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val exportSingleFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*"),
+        onResult = { uri ->
+            val path = pendingExportPath
+            if (uri != null && path != null) {
+                onExportSingleFile(path, uri)
+            }
+            pendingExportPath = null
+        },
     )
     val attachmentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
@@ -4129,6 +4158,7 @@ private fun WorkspaceScreen(
                 )
                 WorkspaceTab.FILES -> FilesTab(
                     files = state.workspaceFiles,
+                    artifacts = state.buildArtifacts,
                     loading = state.filesLoading,
                     suggestedProjectRoot = state.suggestedProjectRoot,
                     onRefresh = onRefreshFiles,
@@ -4137,10 +4167,16 @@ private fun WorkspaceScreen(
                     onExport = {
                         exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
                     },
+                    onDownloadFile = { path, name ->
+                        pendingExportPath = path
+                        exportSingleFileLauncher.launch(name)
+                    },
+                    onDeleteFiles = onDeleteFiles,
+                    onRenameFile = onRenameFile,
+                    onCopyFiles = onCopyFiles,
+                    onMoveFiles = onMoveFiles,
                     onInstallApk = onInstallApk,
                     onShareFile = onShareFile,
-                    onExtractZip = onExtractZip,
-                    onDeleteFile = onDeleteFile,
                 )
                 WorkspaceTab.TERMINAL -> TerminalScreen(
                     lines = state.projectTerminalLines,
@@ -4340,64 +4376,138 @@ private fun FileViewerScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun FilesTab(
     files: List<WorkspaceEntry>,
+    artifacts: List<BuildArtifact>,
     loading: Boolean,
     suggestedProjectRoot: String?,
     onRefresh: () -> Unit,
     onOpenFile: (WorkspaceEntry) -> Unit,
     onUseSuggestedProjectRoot: () -> Unit,
     onExport: () -> Unit,
-    onInstallApk: (WorkspaceEntry) -> Unit,
-    onShareFile: (WorkspaceEntry) -> Unit,
-    onExtractZip: (WorkspaceEntry) -> Unit,
-    onDeleteFile: (WorkspaceEntry) -> Unit,
+    onDownloadFile: (String, String) -> Unit,
+    onDeleteFiles: (List<String>) -> Unit,
+    onRenameFile: (String, String) -> Unit,
+    onCopyFiles: (List<String>, String) -> Unit,
+    onMoveFiles: (List<String>, String) -> Unit,
+    onInstallApk: (String) -> Unit,
+    onShareFile: (String) -> Unit,
 ) {
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
     var expandedDirectories by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var searchQuery by rememberSaveable { mutableStateOf("") }
-    var showSearch by rememberSaveable { mutableStateOf(false) }
-    var selectedFileForAction by remember { mutableStateOf<WorkspaceEntry?>(null) }
+    var selectionMode by rememberSaveable { mutableStateOf(false) }
+    var selectedPaths by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    var clipboardPaths by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    var isMoveOperation by rememberSaveable { mutableStateOf(false) }
 
-    val artifacts = remember(files) {
-        files.filter { !it.isDirectory && (
-            it.name.endsWith(".apk", ignoreCase = true) ||
-            it.name.endsWith(".zip", ignoreCase = true) ||
-            it.name.endsWith(".tar.gz", ignoreCase = true) ||
-            it.name.endsWith(".aar", ignoreCase = true)
-        ) }
-    }
+    var renamingEntry by remember { mutableStateOf<WorkspaceEntry?>(null) }
+    var renameNewName by remember { mutableStateOf("") }
+    var deletingPaths by remember { mutableStateOf<List<String>?>(null) }
 
-    LaunchedEffect(files) {
+    LaunchedEffect(files.map { it.path }) {
+        val allPaths = files.map { it.path }.toSet()
         val directories = files.asSequence().filter { it.isDirectory }.map { it.path }.toSet()
-        val artifactParents = artifacts.flatMap { artifact ->
-            val parts = artifact.path.split('/')
-            (1 until parts.size).map { depth -> parts.take(depth).joinToString("/") }
-        }.filter { it in directories }
-        expandedDirectories = (expandedDirectories.filter { it in directories } + artifactParents).distinct()
+        expandedDirectories = expandedDirectories.filter { it in directories }
+        selectedPaths = selectedPaths.filter { it in allPaths }.toSet()
     }
 
     val expandedSet = expandedDirectories.toSet()
-    val visibleFiles = if (searchQuery.isNotBlank()) {
-        files.filter { entry ->
-            entry.name.contains(searchQuery.trim(), ignoreCase = true) ||
-                entry.path.contains(searchQuery.trim(), ignoreCase = true)
-        }
-    } else {
-        files.filter { entry ->
-            val segments = entry.path.split('/')
-            segments.size == 1 || (1 until segments.size).all { depth ->
-                segments.take(depth).joinToString("/") in expandedSet
-            }
+    val visibleFiles = files.filter { entry ->
+        val segments = entry.path.split('/')
+        segments.size == 1 || (1 until segments.size).all { depth ->
+            segments.take(depth).joinToString("/") in expandedSet
         }
     }
     val directChildCounts = files.filter { candidate ->
         candidate.path.contains('/')
     }.groupingBy { candidate -> candidate.path.substringBeforeLast('/') }.eachCount()
 
-    LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Rename Dialog
+    if (renamingEntry != null) {
+        val entry = renamingEntry!!
+        AlertDialog(
+            onDismissRequest = { renamingEntry = null },
+            title = { Text(if (entry.isDirectory) "Rename Folder" else "Rename File") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Enter new name for \"${entry.name}\":",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = renameNewName,
+                        onValueChange = { renameNewName = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text(entry.name) },
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = renameNewName.trim()
+                        if (clean.isNotBlank() && clean != entry.name) {
+                            onRenameFile(entry.path, clean)
+                        }
+                        renamingEntry = null
+                    },
+                    enabled = renameNewName.isNotBlank() && renameNewName.trim() != entry.name,
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingEntry = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // Delete Confirmation Dialog
+    if (deletingPaths != null) {
+        val paths = deletingPaths!!
+        AlertDialog(
+            onDismissRequest = { deletingPaths = null },
+            title = {
+                Text(if (paths.size == 1) "Delete item?" else "Delete ${paths.size} items?")
+            },
+            text = {
+                Text(
+                    if (paths.size == 1) {
+                        "Are you sure you want to delete \"${paths.first().substringAfterLast('/')}\"? This action cannot be undone."
+                    } else {
+                        "Are you sure you want to delete these ${paths.size} items? This action cannot be undone."
+                    },
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteFiles(paths)
+                        selectedPaths = selectedPaths - paths.toSet()
+                        if (selectedPaths.isEmpty()) selectionMode = false
+                        deletingPaths = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingPaths = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Top Header Bar
         item {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -4408,170 +4518,164 @@ private fun FilesTab(
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                 ),
             ) {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Files",
-                            Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        IconButton(onClick = {
-                            showSearch = !showSearch
-                            if (!showSearch) searchQuery = ""
-                        }) {
-                            Icon(
-                                Icons.Default.Search,
-                                "Search files",
-                                tint = if (showSearch) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (expandedDirectories.isNotEmpty() && searchQuery.isBlank()) {
-                            TextButton(onClick = { expandedDirectories = emptyList() }) {
-                                Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(17.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text("Collapse", fontSize = 11.sp)
-                            }
-                        }
-                        if (!loading && files.any { !it.isDirectory }) {
-                            IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
-                        }
-                        if (loading) {
-                            CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Files",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (expandedDirectories.isNotEmpty()) {
+                        TextButton(onClick = { expandedDirectories = emptyList() }) {
+                            Icon(Icons.Default.KeyboardArrowUp, null, Modifier.size(17.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text("Collapse all", fontSize = 11.sp)
                         }
                     }
-                    if (showSearch) {
-                        Spacer(Modifier.height(4.dp))
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("Filter files (e.g. apk, zip, src)...", fontSize = 13.sp) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                            leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) },
-                            trailingIcon = {
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { searchQuery = "" }) {
-                                        Icon(Icons.Default.Close, "Clear search", Modifier.size(18.dp))
-                                    }
-                                }
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                        )
+                    TextButton(
+                        onClick = {
+                            selectionMode = !selectionMode
+                            if (!selectionMode) selectedPaths = emptySet()
+                        }
+                    ) {
+                        Icon(if (selectionMode) Icons.Default.Close else Icons.Default.CheckCircle, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (selectionMode) "Done" else "Select", fontSize = 11.sp)
+                    }
+                    if (!loading && files.any { !it.isDirectory }) {
+                        IconButton(onClick = onExport) { Icon(Icons.Default.Download, "Export project as ZIP") }
+                    }
+                    if (loading) {
+                        CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh files") }
                     }
                 }
             }
-            Spacer(Modifier.height(10.dp))
         }
 
-        if (artifacts.isNotEmpty() && searchQuery.isBlank()) {
-            item(key = "generated-artifacts-header") {
+        // Selection Action Bar
+        if (selectionMode) {
+            item(key = "selection-toolbar") {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
                     shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-                    ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
                 ) {
-                    Column(
-                        Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Android, null, tint = PocketGreen, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Generated Builds & Archives (${artifacts.size})",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface,
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = visibleFiles.isNotEmpty() && visibleFiles.all { it.path in selectedPaths },
+                                onCheckedChange = { check ->
+                                    selectedPaths = if (check) visibleFiles.map { it.path }.toSet() else emptySet()
+                                },
                             )
-                        }
-                        artifacts.forEach { artifact ->
-                            val isApk = artifact.name.endsWith(".apk", ignoreCase = true)
-                            val isZip = artifact.name.endsWith(".zip", ignoreCase = true) || artifact.name.endsWith(".tar.gz", ignoreCase = true)
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "${selectedPaths.size} of ${visibleFiles.size} selected",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = {
+                                    selectedPaths = if (selectedPaths.size == visibleFiles.size) emptySet() else visibleFiles.map { it.path }.toSet()
+                                }
                             ) {
-                                Column(
-                                    Modifier.fillMaxWidth().padding(10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            if (isApk) Icons.Default.Android else Icons.Default.Folder,
-                                            null,
-                                            tint = if (isApk) PocketGreen else PocketOrange,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text(artifact.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
-                                            Text(
-                                                "${artifact.path.substringBeforeLast('/', "(root)")}  •  ${formatFileSize(artifact.sizeBytes)}",
-                                                fontSize = 11.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                            )
-                                        }
-                                    }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.End,
-                                        verticalAlignment = Alignment.CenterVertically,
+                                Icon(Icons.Default.SelectAll, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (selectedPaths.size == visibleFiles.size) "Deselect all" else "Select all", fontSize = 11.sp)
+                            }
+                        }
+
+                        // Action Buttons Row
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = { deletingPaths = selectedPaths.toList() },
+                                enabled = selectedPaths.isNotEmpty(),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Icon(Icons.Default.Delete, null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Delete", fontSize = 11.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    clipboardPaths = selectedPaths
+                                    isMoveOperation = false
+                                    selectionMode = false
+                                },
+                                enabled = selectedPaths.isNotEmpty(),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Icon(Icons.Default.ContentCopy, null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Copy", fontSize = 11.sp)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    clipboardPaths = selectedPaths
+                                    isMoveOperation = true
+                                    selectionMode = false
+                                },
+                                enabled = selectedPaths.isNotEmpty(),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Icon(Icons.Default.DriveFileMove, null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Move", fontSize = 11.sp)
+                            }
+
+                            if (selectedPaths.size == 1) {
+                                val singleEntry = files.firstOrNull { it.path == selectedPaths.first() }
+                                if (singleEntry != null) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            renamingEntry = singleEntry
+                                            renameNewName = singleEntry.name
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                     ) {
-                                        if (isApk) {
-                                            Button(
-                                                onClick = { onInstallApk(artifact) },
-                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                                modifier = Modifier.height(30.dp),
+                                        Icon(Icons.Default.Edit, null, Modifier.size(15.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Rename", fontSize = 11.sp)
+                                    }
+                                    if (!singleEntry.isDirectory) {
+                                        OutlinedButton(
+                                            onClick = { onDownloadFile(singleEntry.path, singleEntry.name) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        ) {
+                                            Icon(Icons.Default.Download, null, Modifier.size(15.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Download", fontSize = 11.sp)
+                                        }
+                                        OutlinedButton(
+                                            onClick = { onShareFile(singleEntry.path) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        ) {
+                                            Icon(Icons.Default.Share, null, Modifier.size(15.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Share", fontSize = 11.sp)
+                                        }
+                                        if (singleEntry.name.endsWith(".apk", ignoreCase = true)) {
+                                            FilledTonalButton(
+                                                onClick = { onInstallApk(singleEntry.path) },
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                             ) {
-                                                Icon(Icons.Default.Android, null, Modifier.size(14.dp))
+                                                Icon(Icons.Default.Android, null, Modifier.size(15.dp))
                                                 Spacer(Modifier.width(4.dp))
                                                 Text("Install APK", fontSize = 11.sp)
                                             }
-                                            Spacer(Modifier.width(6.dp))
-                                        }
-                                        if (isZip) {
-                                            Button(
-                                                onClick = { onExtractZip(artifact) },
-                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                                modifier = Modifier.height(30.dp),
-                                                colors = ButtonDefaults.buttonColors(
-                                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                                ),
-                                            ) {
-                                                Text("Extract", fontSize = 11.sp)
-                                            }
-                                            Spacer(Modifier.width(6.dp))
-                                        }
-                                        OutlinedButton(
-                                            onClick = { onShareFile(artifact) },
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(30.dp),
-                                        ) {
-                                            Text("Share", fontSize = 11.sp)
-                                        }
-                                        Spacer(Modifier.width(4.dp))
-                                        IconButton(
-                                            onClick = {
-                                                val parts = artifact.path.split('/')
-                                                val parentParts = (1 until parts.size).map { depth -> parts.take(depth).joinToString("/") }
-                                                expandedDirectories = (expandedDirectories + parentParts).distinct()
-                                            },
-                                            modifier = Modifier.size(30.dp),
-                                        ) {
-                                            Icon(Icons.Default.Folder, "Locate in folder", Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                 }
@@ -4579,7 +4683,190 @@ private fun FilesTab(
                         }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+            }
+        }
+
+        // Clipboard Paste Bar
+        if (clipboardPaths.isNotEmpty()) {
+            item(key = "clipboard-bar") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.ContentPaste,
+                            null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "${clipboardPaths.size} item${if (clipboardPaths.size == 1) "" else "s"} ${if (isMoveOperation) "to move" else "copied"}",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                            Text(
+                                "Paste to root or use folder menu to paste inside",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.75f),
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                if (isMoveOperation) {
+                                    onMoveFiles(clipboardPaths.toList(), "")
+                                } else {
+                                    onCopyFiles(clipboardPaths.toList(), "")
+                                }
+                                clipboardPaths = emptySet()
+                            },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Text("Paste to Root", fontSize = 11.sp)
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        IconButton(onClick = { clipboardPaths = emptySet() }) {
+                            Icon(Icons.Default.Close, "Cancel clipboard")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Dedicated Generated Outputs & Build Artifacts Card (APKs, ZIPs)
+        if (artifacts.isNotEmpty()) {
+            item(key = "artifacts-card") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    ),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Android, null, tint = PocketGreen, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Generated Outputs & Artifacts",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Surface(
+                                shape = CircleShape,
+                                color = PocketGreen.copy(alpha = 0.15f),
+                            ) {
+                                Text(
+                                    "${artifacts.size} file${if (artifacts.size == 1) "" else "s"}",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = PocketGreen,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+                        artifacts.forEach { artifact ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (artifact.isApk) PocketGreen.copy(alpha = 0.15f) else Color(0xFF0284C7).copy(alpha = 0.15f)
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        if (artifact.isApk) Icons.Default.Android else Icons.Default.Archive,
+                                        null,
+                                        tint = if (artifact.isApk) PocketGreen else Color(0xFF0284C7),
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+
+                                Spacer(Modifier.width(10.dp))
+
+                                Column(Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            artifact.name,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 13.sp,
+                                            modifier = Modifier.weight(1f, fill = false),
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = if (artifact.isApk) PocketGreen.copy(alpha = 0.2f) else Color(0xFF0284C7).copy(alpha = 0.2f),
+                                        ) {
+                                            Text(
+                                                if (artifact.isApk) "APK" else "ZIP",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (artifact.isApk) PocketGreen else Color(0xFF0284C7),
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        "${artifact.path} · ${formatFileSize(artifact.sizeBytes)}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (artifact.isApk) {
+                                        FilledTonalButton(
+                                            onClick = { onInstallApk(artifact.path) },
+                                            modifier = Modifier.height(32.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp),
+                                        ) {
+                                            Icon(Icons.Default.PlayArrow, null, Modifier.size(14.dp))
+                                            Spacer(Modifier.width(3.dp))
+                                            Text("Install", fontSize = 11.sp)
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onDownloadFile(artifact.path, artifact.name) },
+                                        modifier = Modifier.size(32.dp),
+                                    ) {
+                                        Icon(Icons.Default.Download, "Save ${artifact.name}", Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { onShareFile(artifact.path) },
+                                        modifier = Modifier.size(32.dp),
+                                    ) {
+                                        Icon(Icons.Default.Share, "Share ${artifact.name}", Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -4599,33 +4886,53 @@ private fun FilesTab(
                 }
             }
         }
+
         if (!loading && files.isEmpty()) {
             item { EmptyState(Icons.Default.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
         }
+
+        // Visible Project Files
         items(visibleFiles, key = { it.path }) { entry ->
-            val isApk = !entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)
-            val isZip = !entry.isDirectory && (entry.name.endsWith(".zip", ignoreCase = true) || entry.name.endsWith(".tar.gz", ignoreCase = true))
+            var rowMenuExpanded by remember { mutableStateOf(false) }
+            val isApk = entry.name.endsWith(".apk", ignoreCase = true)
+            val isZip = entry.name.endsWith(".zip", ignoreCase = true)
 
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable {
-                        if (entry.isDirectory) {
-                            expandedDirectories = if (entry.path in expandedSet) {
-                                expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
+                    .combinedClickable(
+                        onClick = {
+                            if (selectionMode) {
+                                selectedPaths = if (entry.path in selectedPaths) selectedPaths - entry.path else selectedPaths + entry.path
+                            } else if (entry.isDirectory) {
+                                expandedDirectories = if (entry.path in expandedSet) {
+                                    expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
+                                } else {
+                                    expandedDirectories + entry.path
+                                }
                             } else {
-                                expandedDirectories + entry.path
+                                onOpenFile(entry)
                             }
-                        } else if (isApk || isZip) {
-                            selectedFileForAction = entry
-                        } else {
-                            onOpenFile(entry)
-                        }
-                    }
-                    .padding(start = if (searchQuery.isNotBlank()) 0.dp else (entry.depth * 20).dp)
-                    .padding(vertical = 8.dp),
+                        },
+                        onLongClick = {
+                            selectionMode = true
+                            selectedPaths = selectedPaths + entry.path
+                        },
+                    )
+                    .padding(start = (entry.depth * 18).dp)
+                    .padding(vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (selectionMode) {
+                    Checkbox(
+                        checked = entry.path in selectedPaths,
+                        onCheckedChange = { check ->
+                            selectedPaths = if (check) selectedPaths + entry.path else selectedPaths - entry.path
+                        },
+                        modifier = Modifier.padding(end = 4.dp),
+                    )
+                }
+
                 if (entry.isDirectory) {
                     Icon(
                         if (entry.path in expandedSet) Icons.Default.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -4633,209 +4940,185 @@ private fun FilesTab(
                         Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.width(5.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Default.Folder,
+                        null,
+                        tint = PocketOrange,
+                        modifier = Modifier.size(20.dp),
+                    )
+                } else {
+                    Icon(
+                        when {
+                            isApk -> Icons.Default.Android
+                            isZip -> Icons.Default.Archive
+                            else -> Icons.Default.Description
+                        },
+                        null,
+                        tint = when {
+                            isApk -> PocketGreen
+                            isZip -> Color(0xFF0284C7)
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
-                Icon(
-                    when {
-                        entry.isDirectory -> Icons.Default.Folder
-                        isApk -> Icons.Default.Android
-                        isZip -> Icons.Default.Folder
-                        else -> Icons.Default.Description
-                    },
-                    null,
-                    tint = when {
-                        entry.isDirectory -> PocketOrange
-                        isApk -> PocketGreen
-                        isZip -> PocketOrange
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-                Spacer(Modifier.width(11.dp))
+
+                Spacer(Modifier.width(10.dp))
+
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             if (entry.isDirectory) "${entry.name} (${directChildCounts[entry.path] ?: 0})" else entry.name,
                             color = when {
                                 isApk -> PocketGreen
-                                isZip -> PocketOrange
+                                isZip -> Color(0xFF0284C7)
                                 !entry.isDirectory -> MaterialTheme.colorScheme.primary
                                 else -> MaterialTheme.colorScheme.onSurface
                             },
-                            fontWeight = if (isApk || isZip) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1,
+                            fontWeight = if (entry.isDirectory || isApk || isZip) FontWeight.Medium else FontWeight.Normal,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
-                        if (isApk || isZip) {
+                        if (isApk) {
                             Spacer(Modifier.width(6.dp))
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
-                                color = (if (isApk) PocketGreen else PocketOrange).copy(alpha = 0.15f),
+                                color = PocketGreen.copy(alpha = 0.2f),
                             ) {
                                 Text(
-                                    if (isApk) "APK" else "ZIP",
-                                    color = if (isApk) PocketGreen else PocketOrange,
+                                    "APK",
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    color = PocketGreen,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                )
+                            }
+                        } else if (isZip) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF0284C7).copy(alpha = 0.2f),
+                            ) {
+                                Text(
+                                    "ZIP",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0284C7),
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                                 )
                             }
                         }
                     }
-                    if (searchQuery.isNotBlank() && !entry.isDirectory) {
-                        Text(entry.path, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                    }
                 }
+
                 if (!entry.isDirectory) {
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(formatFileSize(entry.sizeBytes), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(4.dp))
-                    IconButton(
-                        onClick = { selectedFileForAction = entry },
-                        modifier = Modifier.size(28.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            "File options",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                }
+
+                // Row action menu (More options)
+                if (!selectionMode) {
+                    Box {
+                        IconButton(
+                            onClick = { rowMenuExpanded = true },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(Icons.Default.MoreVert, "Actions for ${entry.name}", Modifier.size(18.dp))
+                        }
+                        DropdownMenu(
+                            expanded = rowMenuExpanded,
+                            onDismissRequest = { rowMenuExpanded = false },
+                        ) {
+                            if (!entry.isDirectory) {
+                                DropdownMenuItem(
+                                    text = { Text("Download to Phone") },
+                                    leadingIcon = { Icon(Icons.Default.Download, null) },
+                                    onClick = {
+                                        rowMenuExpanded = false
+                                        onDownloadFile(entry.path, entry.name)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share") },
+                                    leadingIcon = { Icon(Icons.Default.Share, null) },
+                                    onClick = {
+                                        rowMenuExpanded = false
+                                        onShareFile(entry.path)
+                                    },
+                                )
+                                if (isApk) {
+                                    DropdownMenuItem(
+                                        text = { Text("Install APK") },
+                                        leadingIcon = { Icon(Icons.Default.Android, null, tint = PocketGreen) },
+                                        onClick = {
+                                            rowMenuExpanded = false
+                                            onInstallApk(entry.path)
+                                        },
+                                    )
+                                }
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                leadingIcon = { Icon(Icons.Default.Edit, null) },
+                                onClick = {
+                                    rowMenuExpanded = false
+                                    renamingEntry = entry
+                                    renameNewName = entry.name
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Copy") },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                                onClick = {
+                                    rowMenuExpanded = false
+                                    clipboardPaths = setOf(entry.path)
+                                    isMoveOperation = false
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Move") },
+                                leadingIcon = { Icon(Icons.Default.DriveFileMove, null) },
+                                onClick = {
+                                    rowMenuExpanded = false
+                                    clipboardPaths = setOf(entry.path)
+                                    isMoveOperation = true
+                                },
+                            )
+                            if (entry.isDirectory && clipboardPaths.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Paste into this folder") },
+                                    leadingIcon = { Icon(Icons.Default.ContentPaste, null) },
+                                    onClick = {
+                                        rowMenuExpanded = false
+                                        if (isMoveOperation) {
+                                            onMoveFiles(clipboardPaths.toList(), entry.path)
+                                        } else {
+                                            onCopyFiles(clipboardPaths.toList(), entry.path)
+                                        }
+                                        clipboardPaths = emptySet()
+                                    },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    rowMenuExpanded = false
+                                    deletingPaths = listOf(entry.path)
+                                },
+                            )
+                        }
                     }
                 }
             }
+
             if (!entry.isDirectory) {
                 HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-                    modifier = Modifier.padding(start = if (searchQuery.isNotBlank()) 32.dp else (entry.depth * 20 + 36).dp)
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                    modifier = Modifier.padding(start = (entry.depth * 18 + 36).dp),
                 )
             }
         }
-    }
-
-    if (selectedFileForAction != null) {
-        val entry = selectedFileForAction!!
-        val isApk = entry.name.endsWith(".apk", ignoreCase = true)
-        val isZip = entry.name.endsWith(".zip", ignoreCase = true) || entry.name.endsWith(".tar.gz", ignoreCase = true)
-
-        AlertDialog(
-            onDismissRequest = { selectedFileForAction = null },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        when {
-                            isApk -> Icons.Default.Android
-                            isZip -> Icons.Default.Folder
-                            else -> Icons.Default.Description
-                        },
-                        null,
-                        tint = when {
-                            isApk -> PocketGreen
-                            isZip -> PocketOrange
-                            else -> MaterialTheme.colorScheme.primary
-                        },
-                        modifier = Modifier.size(24.dp),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column {
-                        Text(entry.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1)
-                        Text(
-                            "${entry.path}  •  ${formatFileSize(entry.sizeBytes)}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (isApk) {
-                        Button(
-                            onClick = {
-                                selectedFileForAction = null
-                                onInstallApk(entry)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Default.Android, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Install APK")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                selectedFileForAction = null
-                                onShareFile(entry)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, null, Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Open with Package Installer / Share")
-                        }
-                    }
-                    if (isZip) {
-                        Button(
-                            onClick = {
-                                selectedFileForAction = null
-                                onExtractZip(entry)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Extract ZIP here")
-                        }
-                    }
-                    if (!isApk && !isZip) {
-                        OutlinedButton(
-                            onClick = {
-                                selectedFileForAction = null
-                                onOpenFile(entry)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Default.Description, null, Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("View / Edit file")
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            selectedFileForAction = null
-                            onShareFile(entry)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Share / Export file")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(entry.path))
-                            selectedFileForAction = null
-                            Toast.makeText(context, "Path copied", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Default.ContentCopy, null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Copy relative path")
-                    }
-                    TextButton(
-                        onClick = {
-                            selectedFileForAction = null
-                            onDeleteFile(entry)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    ) {
-                        Icon(Icons.Default.Delete, null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Delete file")
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { selectedFileForAction = null }) {
-                    Text("Close")
-                }
-            }
-        )
     }
 }
 

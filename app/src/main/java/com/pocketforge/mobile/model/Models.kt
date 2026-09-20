@@ -222,6 +222,15 @@ data class WorkspaceEntry(
     val sizeBytes: Long = 0,
 )
 
+data class BuildArtifact(
+    val path: String,
+    val name: String,
+    val sizeBytes: Long,
+    val isApk: Boolean,
+    val isZip: Boolean,
+    val lastModifiedMillis: Long = 0L,
+)
+
 enum class RiskLevel { SAFE, REVIEW, HIGH }
 
 /**
