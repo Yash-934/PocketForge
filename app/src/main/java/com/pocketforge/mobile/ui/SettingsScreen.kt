@@ -84,11 +84,13 @@ import androidx.compose.ui.unit.sp
 import com.pocketforge.mobile.model.DevStack
 import com.pocketforge.mobile.model.ProviderKind
 import com.pocketforge.mobile.model.ProviderProfile
+import com.pocketforge.mobile.model.AgentKind
 import com.pocketforge.mobile.network.ConnectionValidation
 import com.pocketforge.mobile.network.DiscoveredModel
 import com.pocketforge.mobile.network.ModelDiscoveryResult
 import com.pocketforge.mobile.ui.theme.AppThemeMode
 import com.pocketforge.mobile.ui.theme.PocketGreen
+import com.pocketforge.mobile.ui.theme.PocketOrange
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,16 +105,15 @@ private fun LegacySettingsScreen(
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
     onInstallDevStack: (DevStack) -> Unit = {},
-    onRemoveDevStack: (DevStack) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedKind by rememberSaveable(state.provider.kind) { mutableStateOf(state.provider.kind) }
     var baseUrl by rememberSaveable(state.provider.baseUrl) {
-        mutableStateOf(state.provider.baseUrl.ifBlank { "https://api.deepseek.com/anthropic" })
+        mutableStateOf(state.provider.baseUrl.ifBlank { state.provider.kind.defaultBaseUrl })
     }
     var model by rememberSaveable(state.provider.model) {
-        mutableStateOf(state.provider.model.ifBlank { "deepseek-chat" })
+        mutableStateOf(state.provider.model.ifBlank { state.provider.kind.defaultModel })
     }
     var apiKey by rememberSaveable { mutableStateOf(getSavedApiKey(state.provider.kind)) }
     var keyVisible by rememberSaveable { mutableStateOf(false) }
@@ -133,7 +134,7 @@ private fun LegacySettingsScreen(
                         Icon(
                             Icons.Default.Settings,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = PocketOrange,
                             modifier = Modifier.size(24.dp),
                         )
                         Spacer(Modifier.width(10.dp))
@@ -164,34 +165,27 @@ private fun LegacySettingsScreen(
                 Spacer(Modifier.height(10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     ThemeOptionCard(
-                        title = "J.A.R.V.I.S",
+                        title = "Dark",
                         icon = Icons.Default.DarkMode,
-                        selected = state.themeMode == AppThemeMode.JARVIS,
-                        onClick = { onSetThemeMode(AppThemeMode.JARVIS) },
+                        selected = state.themeMode == AppThemeMode.DARK,
+                        onClick = { onSetThemeMode(AppThemeMode.DARK) },
                         modifier = Modifier.weight(1f),
                     )
                     ThemeOptionCard(
-                        title = "STARK",
-                        icon = Icons.Default.DarkMode,
-                        selected = state.themeMode == AppThemeMode.STARK,
-                        onClick = { onSetThemeMode(AppThemeMode.STARK) },
+                        title = "Light",
+                        icon = Icons.Default.LightMode,
+                        selected = state.themeMode == AppThemeMode.LIGHT,
+                        onClick = { onSetThemeMode(AppThemeMode.LIGHT) },
                         modifier = Modifier.weight(1f),
                     )
                     ThemeOptionCard(
-                        title = "VERONICA",
-                        icon = Icons.Default.DarkMode,
-                        selected = state.themeMode == AppThemeMode.VERONICA,
-                        onClick = { onSetThemeMode(AppThemeMode.VERONICA) },
-                        modifier = Modifier.weight(1f),
-                    )
-                    ThemeOptionCard(
-                        title = "MATRIX",
-                        icon = Icons.Default.DarkMode,
-                        selected = state.themeMode == AppThemeMode.MATRIX,
-                        onClick = { onSetThemeMode(AppThemeMode.MATRIX) },
+                        title = "System",
+                        icon = Icons.Default.PhoneAndroid,
+                        selected = state.themeMode == AppThemeMode.SYSTEM,
+                        onClick = { onSetThemeMode(AppThemeMode.SYSTEM) },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -253,7 +247,7 @@ private fun LegacySettingsScreen(
                                                 "${(state.devStackProgress * 100).toInt().coerceIn(0, 100)}%",
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 13.sp,
-                                                color = MaterialTheme.colorScheme.primary,
+                                                color = PocketOrange,
                                             )
                                         }
                                         installed -> Unit // badge already shown next to the name
@@ -271,7 +265,7 @@ private fun LegacySettingsScreen(
                                     LinearProgressIndicator(
                                         progress = { state.devStackProgress.coerceIn(0f, 1f) },
                                         modifier = Modifier.fillMaxWidth().height(8.dp),
-                                        color = MaterialTheme.colorScheme.primary,
+                                        color = PocketOrange,
                                         trackColor = MaterialTheme.colorScheme.surface,
                                     )
                                     Spacer(Modifier.height(6.dp))
@@ -296,6 +290,14 @@ private fun LegacySettingsScreen(
                                                 )
                                             }
                                         }
+                                    }
+                                    state.devStackBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                                        Text(
+                                            "${formatBytes(speed)}/s",
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = PocketOrange,
+                                        )
                                     }
                                 } else if (index != DevStack.entries.lastIndex) {
                                     HorizontalDivider(
@@ -351,7 +353,7 @@ private fun LegacySettingsScreen(
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                state.provider.model.ifBlank { "deepseek-chat" },
+                                state.provider.model.ifBlank { state.provider.kind.defaultModel },
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 15.sp,
                             )
@@ -381,7 +383,7 @@ private fun LegacySettingsScreen(
                                             when (state.apiPingStatus) {
                                                 ApiPingStatus.OK -> PocketGreen
                                                 ApiPingStatus.FAILED -> MaterialTheme.colorScheme.error
-                                                ApiPingStatus.PINGING -> MaterialTheme.colorScheme.primary
+                                                ApiPingStatus.PINGING -> PocketOrange
                                                 ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant
                                             },
                                         ),
@@ -441,7 +443,7 @@ private fun LegacySettingsScreen(
                                 Icon(
                                     Icons.Default.Key,
                                     contentDescription = null,
-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = if (isSelected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Spacer(Modifier.width(10.dp))
@@ -450,13 +452,13 @@ private fun LegacySettingsScreen(
                                         Text(kind.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                                         if (kind.experimental) {
                                             Spacer(Modifier.width(6.dp))
-                                            Text("EXPERIMENTAL", color = MaterialTheme.colorScheme.primary, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                            Text("EXPERIMENTAL", color = PocketOrange, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                                         }
                                     }
                                     Text(kind.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (isSelected) {
-                                    Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
@@ -474,7 +476,7 @@ private fun LegacySettingsScreen(
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        focusedBorderColor = PocketOrange,
                     ),
                 )
 
@@ -494,7 +496,7 @@ private fun LegacySettingsScreen(
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            focusedBorderColor = PocketOrange,
                         ),
                     )
                     OutlinedButton(
@@ -555,7 +557,7 @@ private fun LegacySettingsScreen(
                         }
                     },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        focusedBorderColor = PocketOrange,
                     ),
                 )
 
@@ -621,7 +623,7 @@ private fun LegacySettingsScreen(
                         .fillMaxWidth()
                         .height(50.dp),
                     shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    colors = ButtonDefaults.buttonColors(containerColor = PocketOrange),
                 ) {
                     if (isValidating) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
@@ -660,7 +662,13 @@ private fun LegacySettingsScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         InfoRow(icon = Icons.Default.Terminal, label = "Linux Rootfs", value = "Ubuntu 20.04 PRoot")
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        InfoRow(icon = Icons.Default.SmartToy, label = "Developer tools", value = "Claude Code + Node.js 24 + Python 3")
+                        InfoRow(
+                            icon = Icons.Default.SmartToy,
+                            label = "Installed agents",
+                            value = AgentKind.entries.mapNotNull { agent ->
+                                state.installedAgentVersions[agent]?.let { version -> "${agent.title} v$version" }
+                            }.joinToString(" · ").ifBlank { "No verified agent installation" },
+                        )
 
                         Spacer(Modifier.height(4.dp))
                         OutlinedButton(
@@ -739,7 +747,7 @@ private fun LegacySettingsScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text("PocketForge", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("v1.1.0", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Text("v1.0.0", color = PocketOrange, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                         }
                         Text(
                             "Autonomous AI Developer with native on-device Linux PRoot sandbox and Claude Code integration.",
@@ -760,11 +768,11 @@ private fun SectionHeader(title: String, subtitle: String, icon: ImageVector) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Surface(
             shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            color = PocketOrange.copy(alpha = 0.12f),
             modifier = Modifier.size(36.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                Icon(icon, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(18.dp))
             }
         }
         Spacer(Modifier.width(10.dp))
@@ -789,7 +797,7 @@ private fun ThemeOptionCard(
             .clickable(onClick = onClick)
             .border(
                 width = if (selected) 2.dp else 1.dp,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                color = if (selected) PocketOrange else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
                 shape = RoundedCornerShape(14.dp),
             ),
         shape = RoundedCornerShape(14.dp),
@@ -805,7 +813,7 @@ private fun ThemeOptionCard(
             Icon(
                 icon,
                 contentDescription = title,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (selected) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(22.dp),
             )
             Text(

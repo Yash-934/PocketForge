@@ -15,14 +15,128 @@ enum class ProviderKind(
     val defaultBaseUrl: String,
     val defaultModel: String,
     val experimental: Boolean = false,
+    val fixedBaseUrl: Boolean = false,
+    val fixedProtocol: Boolean = false,
 ) {
     CLAUDE("Claude subscription", "Pro, Max, Team or Enterprise", ProviderProtocol.CLAUDE_LOGIN, "", "default"),
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
-    NVIDIA_NIM("NVIDIA NIM", "OpenAI-compatible models hosted by NVIDIA", ProviderProtocol.OPENAI_CHAT, "https://integrate.api.nvidia.com/v1", "meta/llama-3.3-70b-instruct", true),
     KIMI("Kimi", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.moonshot.ai/anthropic", "kimi-k2.6", true),
+    OPENCODE_ZEN(
+        "OpenCode Zen",
+        "Models through the OpenCode Zen gateway",
+        ProviderProtocol.OPENAI_RESPONSES,
+        "https://opencode.ai/zen/v1",
+        "deepseek-v4-flash",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
+    NVIDIA_NIM(
+        "NVIDIA NIM",
+        "OpenAI-compatible models hosted by NVIDIA",
+        ProviderProtocol.OPENAI_CHAT,
+        "https://integrate.api.nvidia.com/v1",
+        "qwen/qwen2.5-coder-32b-instruct",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
     CUSTOM("Custom API", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
+}
+
+/**
+ * Coding agent engine installed in the private Linux runtime.
+ * Each coding agent is installed independently on demand over the shared Core runtime.
+ */
+enum class AgentKind(
+    val stableId: String,
+    val title: String,
+    val subtitle: String,
+    val downloadNote: String,
+) {
+    CLAUDE_CODE(
+        "claude-code",
+        "Claude Code",
+        "Anthropic's coding agent · broad provider support",
+        "71.8 MB",
+    ),
+    DEEPSEEK_HARNESS(
+        "deepseek-harness",
+        "DeepSeek Harness",
+        "Official DeepSeek coding agent · API-key providers",
+        "26.5 MB",
+    ),
+    ANTIGRAVITY(
+        "antigravity",
+        "Antigravity CLI",
+        "Google's official coding agent · Google account",
+        "39.9 MB",
+    ),
+    ;
+
+    companion object {
+        fun fromStored(value: String?): AgentKind = entries.firstOrNull {
+            it.stableId == value || it.name == value
+        } ?: CLAUDE_CODE
+    }
+}
+
+/** Provider kinds usable with [AgentKind.DEEPSEEK_HARNESS]. Claude OAuth login has no dsh equivalent. */
+val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
+    ProviderKind.DEEPSEEK,
+    ProviderKind.ANTHROPIC,
+    ProviderKind.LLM_ROUTER,
+    ProviderKind.KIMI,
+    ProviderKind.OPENCODE_ZEN,
+    ProviderKind.NVIDIA_NIM,
+    ProviderKind.CUSTOM,
+)
+
+val DSH_PROTOCOL_PROVIDERS: Set<ProviderKind> = setOf(
+    ProviderKind.KIMI,
+    ProviderKind.OPENCODE_ZEN,
+    ProviderKind.NVIDIA_NIM,
+    ProviderKind.CUSTOM,
+)
+
+fun defaultDshApiForProvider(kind: ProviderKind): String = when (kind) {
+    ProviderKind.OPENCODE_ZEN -> "openai-responses"
+    ProviderKind.NVIDIA_NIM -> "openai-completions"
+    else -> "anthropic-messages"
+}
+
+/**
+ * Best-effort protocol choice for a user-entered custom gateway URL.
+ * The picker remains editable because a URL alone cannot prove a gateway's wire format.
+ */
+fun inferredDshApiForUrl(baseUrl: String): String {
+    val normalized = baseUrl.trim().trimEnd('/').lowercase(Locale.ROOT)
+    return when {
+        normalized.endsWith("/responses") -> "openai-responses"
+        "/anthropic" in normalized || "api.anthropic.com" in normalized -> "anthropic-messages"
+        normalized.endsWith("/v1") -> "openai-completions"
+        else -> "anthropic-messages"
+    }
+}
+
+/** Resolves the protocol DeepSeek Harness will actually use for this saved profile. */
+fun providerProtocolForAgent(profile: ProviderProfile, agent: AgentKind): ProviderProtocol {
+    if (agent != AgentKind.DEEPSEEK_HARNESS || profile.kind !in DSH_PROTOCOL_PROVIDERS) {
+        return profile.kind.protocol
+    }
+    val api = if (profile.kind.fixedProtocol) defaultDshApiForProvider(profile.kind) else profile.dshApi
+    return when (api) {
+        "openai-completions" -> ProviderProtocol.OPENAI_CHAT
+        "openai-responses" -> ProviderProtocol.OPENAI_RESPONSES
+        else -> ProviderProtocol.ANTHROPIC_GATEWAY
+    }
+}
+
+/** Provider choices shown for the selected coding agent. */
+fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
+    AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
+    AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot { it == ProviderKind.OPENCODE_ZEN }
+    AgentKind.ANTIGRAVITY -> emptyList()
 }
 
 data class ProviderProfile(
@@ -30,7 +144,12 @@ data class ProviderProfile(
     val baseUrl: String = kind.defaultBaseUrl,
     val model: String = kind.defaultModel,
     val hasSecret: Boolean = false,
-)
+    /** dsh custom-route wire protocol for CUSTOM: anthropic-messages | openai-completions | openai-responses. */
+    val dshApi: String = defaultDshApiForProvider(kind),
+) {
+    /** Effective base URL: fixed kinds always resolve to their constant, ignoring stored drift. */
+    val resolvedBaseUrl: String get() = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl
+}
 
 enum class ProjectKind { PROJECT, QUICK_PROJECT }
 
@@ -78,26 +197,6 @@ fun projectSlug(name: String): String {
 }
 
 data class QuickChatIdentity(val displayName: String, val slug: String)
-
-enum class BackgroundTaskState {
-    IDLE,
-    RUNNING,
-    COMPLETED,
-    FAILED,
-    CANCELLED;
-
-    val isActive: Boolean get() = this == RUNNING
-}
-
-data class BackgroundTask(
-    val id: String = UUID.randomUUID().toString(),
-    val projectId: String,
-    val chatId: String? = null,
-    val state: BackgroundTaskState = BackgroundTaskState.IDLE,
-    val description: String = "",
-    val startedAtMillis: Long = System.currentTimeMillis(),
-    val finishedAtMillis: Long? = null,
-)
 
 fun generateQuickChatIdentity(usedSlugs: Set<String>, random: Random = Random.Default): QuickChatIdentity {
     val adjectives = listOf("bright", "calm", "clever", "curious", "gentle", "nimble", "quiet", "swift", "wise", "bold")

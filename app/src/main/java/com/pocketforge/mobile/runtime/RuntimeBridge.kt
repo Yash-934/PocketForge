@@ -16,8 +16,7 @@ data class RuntimeLaunchConfig(
 
 interface RuntimeBridge {
     val events: Flow<RuntimeEvent>
-    suspend fun startSession(projectId: String, projectSlug: String, projectKind: ProjectKind, prompt: String, conversationHistory: List<ChatMessage>, provider: ProviderProfile): String
-    suspend fun respondToApproval(request: ToolRequest, approved: Boolean)
+    suspend fun startSession(projectId: String, projectSlug: String, projectKind: ProjectKind, prompt: String, conversationHistory: List<ChatMessage>, provider: ProviderProfile): String    suspend fun respondToApproval(request: ToolRequest, approved: Boolean)
     suspend fun stopSession(sessionId: String)
     suspend fun stopActiveSession()
     suspend fun undoLastChanges(projectId: String): Boolean
@@ -32,7 +31,12 @@ object RuntimeLaunchConfigBuilder {
         val environment = linkedMapOf("DISABLE_AUTOUPDATER" to "1")
         when (profile.kind.protocol) {
             com.pocketforge.mobile.model.ProviderProtocol.CLAUDE_LOGIN -> {
-                applyClaudeSubscriptionAuth(environment, authToken)
+                require(!authToken.isNullOrBlank()) { "Enter a Claude subscription token first" }
+                environment["CLAUDE_CODE_OAUTH_TOKEN"] = authToken
+                // Claude Code gives API-key variables precedence over OAuth. Explicitly
+                // clear them so a previous API provider can never shadow this token.
+                environment["ANTHROPIC_API_KEY"] = ""
+                environment["ANTHROPIC_AUTH_TOKEN"] = ""
             }
             com.pocketforge.mobile.model.ProviderProtocol.ANTHROPIC -> {
                 environment["ANTHROPIC_BASE_URL"] = profile.baseUrl.trimEnd('/')
@@ -80,15 +84,5 @@ object RuntimeLaunchConfigBuilder {
             arguments = listOf("-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"),
             environment = environment,
         )
-    }
-
-    private fun applyClaudeSubscriptionAuth(
-        environment: MutableMap<String, String>,
-        authToken: String?,
-    ) {
-        require(!authToken.isNullOrBlank()) { "Claude subscription setup token is missing" }
-        environment["CLAUDE_CODE_OAUTH_TOKEN"] = authToken
-        environment["ANTHROPIC_API_KEY"] = ""
-        environment["ANTHROPIC_AUTH_TOKEN"] = ""
     }
 }

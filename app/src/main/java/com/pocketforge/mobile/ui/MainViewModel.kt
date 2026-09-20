@@ -6,14 +6,17 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.os.SystemClock
 import android.os.Build
+import android.system.Os
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.pocketforge.mobile.BuildConfig
 import com.pocketforge.mobile.data.ApiKeyVault
+import com.pocketforge.mobile.data.ApiKeyInfo
 import com.pocketforge.mobile.data.AppPreferences
 import com.pocketforge.mobile.model.ActivityItem
+import com.pocketforge.mobile.model.AgentKind
 import com.pocketforge.mobile.model.ChangeItem
 import com.pocketforge.mobile.model.ChatMessage
 import com.pocketforge.mobile.model.ChatAttachment
@@ -28,10 +31,19 @@ import com.pocketforge.mobile.model.ToolRequest
 import com.pocketforge.mobile.model.WorkspaceEntry
 import com.pocketforge.mobile.model.projectSlug
 import com.pocketforge.mobile.model.generateQuickChatIdentity
+import com.pocketforge.mobile.model.providerProtocolForAgent
 import com.pocketforge.mobile.network.ConnectionValidation
 import com.pocketforge.mobile.network.ModelDiscoveryResult
 import com.pocketforge.mobile.network.ProviderApiClient
+import com.pocketforge.mobile.network.GitHubRepository
 import com.pocketforge.mobile.runtime.ClaudeRuntimeBridge
+import com.pocketforge.mobile.runtime.DshRuntimeBridge
+import com.pocketforge.mobile.runtime.AgentRegistry
+import com.pocketforge.mobile.runtime.AgentUpdateInfo
+import com.pocketforge.mobile.runtime.AntigravityAuthController
+import com.pocketforge.mobile.runtime.AntigravityAuthState
+import com.pocketforge.mobile.runtime.AntigravityAuthStatus
+import com.pocketforge.mobile.runtime.AntigravityRuntimeBridge
 import com.pocketforge.mobile.runtime.NativeSpawnProcess
 import com.pocketforge.mobile.runtime.RuntimeInstallProgress
 import com.pocketforge.mobile.runtime.RuntimeInstaller
@@ -39,13 +51,14 @@ import com.pocketforge.mobile.runtime.RuntimeSetupController
 import com.pocketforge.mobile.runtime.RuntimeSetupService
 import com.pocketforge.mobile.runtime.RuntimeSetupSnapshot
 import com.pocketforge.mobile.runtime.RuntimeSetupStatus
+import com.pocketforge.mobile.runtime.supportsArm64Runtime
 import com.pocketforge.mobile.runtime.AndroidAppInstaller
 import com.pocketforge.mobile.update.AppUpdateInfo
 import com.pocketforge.mobile.update.AppUpdater
 import java.io.File
-import java.io.InputStream
 import java.io.RandomAccessFile
 import java.net.UnknownHostException
+import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
 import java.util.zip.ZipEntry
@@ -53,6 +66,7 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -66,6 +80,7 @@ enum class StartupStage { CHECKING, SETUP_REQUIRED, INSTALLING, MODEL_SETUP, INI
 
 enum class ApiPingStatus { IDLE, PINGING, OK, FAILED }
 enum class AppUpdateStatus { AVAILABLE, PERMISSION_REQUIRED, DOWNLOADING, INSTALLING, ERROR }
+enum class GitHubAuthStatus { DISCONNECTED, STARTING, AWAITING_USER, CONNECTED, ERROR }
 
 data class TerminalOutputLine(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -80,6 +95,16 @@ internal fun sanitizeTerminalOutput(text: String): String = text
     .replace(ANSI_TERMINAL_SEQUENCE, "")
     .filter { it == '\n' || it == '\r' || it == '\t' || it.code >= 0x20 }
 
+private val ANTIGRAVITY_MODEL_EFFORT = Regex("^(.*)-(low|medium|high)$")
+
+private fun antigravityEffortFromModel(model: String): String? =
+    ANTIGRAVITY_MODEL_EFFORT.matchEntire(model)?.groupValues?.get(2)
+
+private fun antigravityModelWithEffort(model: String, effort: String): String? {
+    val match = ANTIGRAVITY_MODEL_EFFORT.matchEntire(model) ?: return null
+    return "${match.groupValues[1]}-$effort"
+}
+
 private data class ProjectTerminalSnapshot(
     val lines: List<TerminalOutputLine> = emptyList(),
     val cwd: String = "/workspace",
@@ -91,16 +116,23 @@ private data class ProjectTerminalResult(
     val cwd: String,
 )
 
-data class WorkspaceClipboard(
-    val sourcePaths: List<String>,
-    val isCut: Boolean = false,
+private data class RuntimeRetryRequest(
+    val runtime: com.pocketforge.mobile.runtime.RuntimeBridge,
+    val project: Project,
+    val prompt: String,
+    val history: List<ChatMessage>,
+    val provider: ProviderProfile,
 )
 
-private data class WorkspaceScanResult(
-    val entries: List<WorkspaceEntry>,
-    val apks: List<WorkspaceEntry>,
-    val suggestedRoot: String?,
-    val androidDetected: Boolean,
+private data class TranscriptWrite(
+    val projectId: String,
+    val chatId: String,
+    val messages: List<ChatMessage>,
+)
+
+private data class ImportedZipProject(
+    val project: Project,
+    val sourceAttachment: ChatAttachment,
 )
 
 data class AppUiState(
@@ -112,20 +144,35 @@ data class AppUiState(
     val startupIndeterminate: Boolean = false,
     val startupError: String? = null,
     val startupErrorIsOffline: Boolean = false,
+    val showDetailedSetupProgress: Boolean = false,
     val onboardingComplete: Boolean = false,
     val backgroundSetupComplete: Boolean = false,
     val provider: ProviderProfile = ProviderProfile(ProviderKind.ANTHROPIC),
+    val activeApiKeyName: String? = null,
     val themeMode: com.pocketforge.mobile.ui.theme.AppThemeMode = com.pocketforge.mobile.ui.theme.AppThemeMode.DARK,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
+    val projectImporting: Boolean = false,
+    val projectImportMessage: String? = null,
+    val gitCloneRunning: Boolean = false,
+    val gitCloneMessage: String? = null,
+    val githubAuthStatus: GitHubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+    val githubLogin: String? = null,
+    val githubUserCode: String? = null,
+    val githubVerificationUri: String? = null,
+    val githubMessage: String? = null,
+    val githubRepositories: List<GitHubRepository> = emptyList(),
+    val githubRepositoriesLoading: Boolean = false,
     val activeProject: Project? = null,
+    val workspaceVisible: Boolean = false,
+    val readOnlyProject: Project? = null,
+    val readOnlyProjectChats: List<ProjectChat> = emptyList(),
+    val readOnlyChatId: String? = null,
+    val readOnlyMessages: List<ChatMessage> = emptyList(),
     val projectChats: List<ProjectChat> = emptyList(),
     val activeChatId: String? = null,
     val workspaceFiles: List<WorkspaceEntry> = emptyList(),
-    val selectedWorkspacePaths: Set<String> = emptySet(),
-    val workspaceClipboard: WorkspaceClipboard? = null,
-    val detectedApkOutputs: List<WorkspaceEntry> = emptyList(),
     val androidProjectDetected: Boolean = false,
     val filesLoading: Boolean = false,
     val openedFilePath: String? = null,
@@ -161,9 +208,33 @@ data class AppUiState(
     val selectedDevStacks: Set<DevStack> = emptySet(),
     val installedDevStacks: Set<DevStack> = emptySet(),
     val devStackInstalling: DevStack? = null,
+    val devStackRemoving: Boolean = false,
     val devStackMessage: String? = null,
     val devStackProgress: Float = 0f,
     val devStackBytes: Pair<Long, Long>? = null,
+    val devStackBytesPerSecond: Long? = null,
+    val agentKind: AgentKind = AgentKind.CLAUDE_CODE,
+    val primaryAgentKind: AgentKind = AgentKind.CLAUDE_CODE,
+    val installedAgentVersions: Map<AgentKind, String> = emptyMap(),
+    val agentInstalling: AgentKind? = null,
+    val agentMessage: String? = null,
+    val agentProgress: Float = 0f,
+    val agentDownloadedBytes: Long? = null,
+    val agentTotalBytes: Long? = null,
+    val agentBytesPerSecond: Long? = null,
+    val agentUpdates: Map<AgentKind, AgentUpdateInfo> = emptyMap(),
+    val agentUpdatesChecking: Boolean = false,
+    val agentUpdating: AgentKind? = null,
+    val agentUpdateMessage: String? = null,
+    val agentUpdateProgress: Float = 0f,
+    val agentUpdateDownloadedBytes: Long? = null,
+    val agentUpdateTotalBytes: Long? = null,
+    val agentUpdateBytesPerSecond: Long? = null,
+    val antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
+    val antigravityModel: String = "",
+    val antigravityEffort: String = "high",
+    val antigravityModels: List<String> = emptyList(),
+    val antigravityModelsLoading: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
     val appUpdate: AppUpdateInfo? = null,
@@ -176,8 +247,22 @@ data class AppUiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vault = ApiKeyVault(application)
     private val preferences = AppPreferences(application)
-    private val runtime = ClaudeRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
+    private val claudeRuntime = ClaudeRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
+    private val dshRuntime = DshRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
     private val installer = RuntimeInstaller(application)
+    private val antigravityRuntime = AntigravityRuntimeBridge(
+        application,
+        model = { _state.value.antigravityModel },
+        effort = { _state.value.antigravityEffort },
+        conversationId = { projectId ->
+            _state.value.activeChatId?.let { preferences.loadAgentConversation(AgentKind.ANTIGRAVITY, projectId, it) }
+        },
+        saveConversationId = { projectId, id ->
+            _state.value.activeChatId?.let { preferences.saveAgentConversation(AgentKind.ANTIGRAVITY, projectId, it, id) }
+        },
+    )
+    private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
+    private fun activeRuntime(): com.pocketforge.mobile.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient()
     private fun appUpdater(): AppUpdater = AppUpdater(
         getApplication(),
@@ -188,14 +273,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var projectTerminalProjectId: String? = null
     @Volatile private var projectTerminalStopRequested: Boolean = false
     @Volatile private var setupCompletionHandled: Boolean = false
+    @Volatile private var githubAuthProcess: Process? = null
+    private var githubAuthJob: kotlinx.coroutines.Job? = null
+    @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
+    private var activeRuntimeRequest: RuntimeRetryRequest? = null
+    private val failedApiKeyIds = mutableSetOf<String>()
+    private val transcriptWrites = Channel<TranscriptWrite>(Channel.UNLIMITED)
+    private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
+    private val initialPrimaryAgentKind = preferences.primaryAgentKind
+        .takeIf(String::isNotBlank)
+        ?.let(AgentKind::fromStored)
+        ?: initialAgentKind
+    private val antigravityAuthController = AntigravityAuthController(
+        application,
+        preferences.antigravitySignedIn,
+        preferences.antigravityAccountEmail,
+    ) { signedIn, email ->
+        preferences.antigravitySignedIn = signedIn
+        preferences.antigravityAccountEmail = email.orEmpty()
+        if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
+    }
     private val _state = MutableStateFlow(
         AppUiState(
             onboardingComplete = preferences.onboardingComplete,
             backgroundSetupComplete = preferences.backgroundSetupComplete,
-            provider = preferences.loadProvider(vault),
+            agentKind = initialAgentKind,
+            primaryAgentKind = initialPrimaryAgentKind,
+            provider = preferences.loadProvider(vault, initialAgentKind),
+            activeApiKeyName = vault.list(preferences.loadProvider(vault, initialAgentKind).kind.name)
+                .firstOrNull(ApiKeyInfo::isActive)?.name,
+            antigravityAuth = AntigravityAuthState(
+                status = if (preferences.antigravitySignedIn) AntigravityAuthStatus.SIGNED_IN else AntigravityAuthStatus.SIGNED_OUT,
+                message = preferences.antigravityAccountEmail.takeIf(String::isNotBlank)?.let { "Connected as $it" },
+                accountEmail = preferences.antigravityAccountEmail.takeIf(String::isNotBlank),
+            ),
+            antigravityModel = preferences.antigravityModel,
+            antigravityEffort = preferences.antigravityEffort,
             themeMode = runCatching { com.pocketforge.mobile.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
-                .getOrDefault(com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS),
+                .getOrDefault(com.pocketforge.mobile.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
+            githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+            githubLogin = preferences.githubLogin.takeIf(String::isNotBlank),
             selectedDevStacks = preferences.selectedDevStacks.mapNotNull { name ->
                 runCatching { DevStack.valueOf(name) }.getOrNull()
             }.toSet() + DevStack.WEB,
@@ -203,7 +321,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     init {
+        // GitHub's official CLI owns its OAuth credential. Remove credentials from
+        // the retired custom OAuth implementation and discover the real CLI status.
+        vault.remove(LEGACY_GITHUB_TOKEN_KEY)
+        viewModelScope.launch { refreshGitHubConnection() }
         RuntimeSetupController.restore(application)
+        viewModelScope.launch(Dispatchers.IO) {
+            for (write in transcriptWrites) {
+                preferences.saveMessages(write.projectId, write.chatId, write.messages)
+            }
+        }
+        viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { antigravityRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch {
+            antigravityAuthController.state.collect { auth ->
+                _state.update { it.copy(antigravityAuth = auth) }
+                auth.authorizationUrl?.takeIf { it != lastOpenedAntigravityAuthUrl }?.let { url ->
+                    lastOpenedAntigravityAuthUrl = url
+                    runCatching {
+                        getApplication<Application>().startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }.onFailure {
+                        _state.update { state -> state.copy(toastMessage = "Could not open the browser. Copy the sign-in URL instead.") }
+                    }
+                }
+            }
+        }
+        if (antigravityAuthController.hasOfficialCredential() &&
+            (!preferences.antigravitySignedIn || preferences.antigravityAccountEmail.isBlank())
+        ) {
+            viewModelScope.launch { antigravityAuthController.beginLogin() }
+        }
         if (!preferences.legacySeededCredentialRemoved) {
             vault.remove(ProviderKind.CUSTOM.name)
             preferences.legacySeededCredentialRemoved = true
@@ -224,7 +373,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 hasSecret = true,
             )
             vault.put(ProviderKind.CUSTOM.name, BuildConfig.TEST_OPENROUTER_API_KEY)
-            preferences.saveProvider(testProvider)
+            preferences.saveProvider(testProvider, _state.value.agentKind)
             preferences.testProviderDefaultsVersion = TEST_PROVIDER_DEFAULTS_VERSION
             _state.update { it.copy(provider = testProvider) }
         }
@@ -363,6 +512,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun requestProjectTerminalCommand(command: String) {
         val normalized = command.trim()
         if (normalized.isBlank() || _state.value.projectTerminalRunning || projectTerminalProcess?.isAlive == true) return
+        if (requiresAndroidToolchain(normalized) && !installer.isStackInstalled(DevStack.ANDROID)) {
+            _state.update {
+                it.copy(toastMessage = "Android build tools are not installed. Add Android in Settings → Development stacks.")
+            }
+            return
+        }
         if (isDestructiveTerminalCommand(normalized)) {
             _state.update { it.copy(pendingTerminalCommand = normalized) }
         } else {
@@ -692,6 +847,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun buildAndRunAndroidApp() {
         val project = _state.value.activeProject ?: return
         if (_state.value.androidBuildRunning) return
+        if (!installer.isStackInstalled(DevStack.ANDROID)) {
+            _state.update {
+                it.copy(toastMessage = "Android build tools are not installed. Add Android in Settings → Development stacks.")
+            }
+            return
+        }
         if (_state.value.isRunning) {
             _state.update { it.copy(toastMessage = "Wait for Claude to finish creating the project before building.") }
             return
@@ -749,7 +910,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return workspace.walkTopDown()
             .maxDepth(4)
             .filter { it.isFile && it.name in settingsNames }
-            .map(File::getParentFile)
+            .mapNotNull(File::getParentFile)
             .sortedBy { it.absolutePath.length }
             .firstOrNull { root ->
                 root.walkTopDown()
@@ -758,15 +919,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
     }
 
+    private fun requiresAndroidToolchain(command: String): Boolean =
+        Regex("(?m)(^|[;&|]\\s*)(?:\\./)?gradle(?:w)?(?:\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(command)
+
 
     fun toggleTheme() {
-        val next = when (_state.value.themeMode) {
-            com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS -> com.pocketforge.mobile.ui.theme.AppThemeMode.STARK
-            com.pocketforge.mobile.ui.theme.AppThemeMode.STARK -> com.pocketforge.mobile.ui.theme.AppThemeMode.VERONICA
-            com.pocketforge.mobile.ui.theme.AppThemeMode.VERONICA -> com.pocketforge.mobile.ui.theme.AppThemeMode.MATRIX
-            com.pocketforge.mobile.ui.theme.AppThemeMode.MATRIX -> com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS
-            com.pocketforge.mobile.ui.theme.AppThemeMode.LIGHT -> com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS
-            else -> com.pocketforge.mobile.ui.theme.AppThemeMode.JARVIS
+        val next = if (_state.value.themeMode == com.pocketforge.mobile.ui.theme.AppThemeMode.DARK) {
+            com.pocketforge.mobile.ui.theme.AppThemeMode.LIGHT
+        } else {
+            com.pocketforge.mobile.ui.theme.AppThemeMode.DARK
         }
         setThemeMode(next)
     }
@@ -778,13 +939,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getSavedApiKey(kind: ProviderKind): String = vault.get(kind.name).orEmpty()
 
+    fun getSavedApiKeys(kind: ProviderKind): List<ApiKeyInfo> = vault.list(kind.name)
+
+    fun addApiKey(kind: ProviderKind, name: String, secret: String): List<ApiKeyInfo> {
+        vault.add(kind.name, name, secret)
+        val keys = vault.list(kind.name)
+        refreshActiveApiKey(kind)
+        return keys
+    }
+
+    fun activateApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        vault.activate(kind.name, keyId)
+        refreshActiveApiKey(kind)
+        return vault.list(kind.name)
+    }
+
+    fun removeApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        vault.remove(kind.name, keyId)
+        refreshActiveApiKey(kind)
+        return vault.list(kind.name)
+    }
+
+    private fun refreshActiveApiKey(kind: ProviderKind) {
+        if (_state.value.provider.kind != kind) return
+        val keys = vault.list(kind.name)
+        _state.update { current ->
+            current.copy(
+                activeApiKeyName = keys.firstOrNull(ApiKeyInfo::isActive)?.name,
+                provider = current.provider.copy(hasSecret = keys.isNotEmpty()),
+            )
+        }
+    }
+
+    /** Keeps both agent bridges mapped to the same workspace root; the active one is used. */
+    private fun configureBridgeRoots(projectId: String, rootPath: String) {
+        claudeRuntime.configureProjectRoot(projectId, rootPath)
+        dshRuntime.configureProjectRoot(projectId, rootPath)
+        antigravityRuntime.configureProjectRoot(projectId, rootPath)
+    }
+
     init {
         viewModelScope.launch { RuntimeSetupController.snapshot.collect(::onSetupSnapshot) }
-        viewModelScope.launch { runtime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { claudeRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch { bootstrap() }
     }
 
     private suspend fun bootstrap() {
+        if (!supportsArm64Runtime(android.os.Build.SUPPORTED_ABIS, System.getProperty("os.arch"))) {
+            _state.update {
+                it.copy(
+                    startupStage = StartupStage.SETUP_REQUIRED,
+                    startupMessage = "ARM64 device required",
+                    startupError = null,
+                    startupErrorIsOffline = false,
+                )
+            }
+            return
+        }
         val setupSnapshot = RuntimeSetupController.snapshot.value
         if (setupSnapshot.status == RuntimeSetupStatus.RUNNING) {
             onSetupSnapshot(setupSnapshot)
@@ -799,7 +1010,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         _state.update { current ->
-            current.copy(installedDevStacks = if (installed) installer.installedStacks() else current.installedDevStacks)
+            current.copy(
+                installedDevStacks = if (installed) installer.installedStacks() else current.installedDevStacks,
+                installedAgentVersions = if (installed) installer.installedAgentVersions() else emptyMap(),
+            )
         }
         when {
             !installed && setupSnapshot.status == RuntimeSetupStatus.ERROR -> onSetupSnapshot(setupSnapshot)
@@ -825,6 +1039,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 startupIndeterminate = false,
                 startupError = null,
                 startupErrorIsOffline = false,
+                showDetailedSetupProgress = true,
             )
         }
         resumeRuntimeSetupService()
@@ -843,7 +1058,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             getApplication(),
             Intent(getApplication(), RuntimeSetupService::class.java)
                 .setAction(RuntimeSetupService.ACTION_START)
-                .putExtra(RuntimeSetupService.EXTRA_STACKS, stacks),
+                .putExtra(RuntimeSetupService.EXTRA_STACKS, stacks)
+                .putExtra(RuntimeSetupService.EXTRA_AGENT, _state.value.agentKind.name),
         )
     }
 
@@ -935,7 +1151,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Keep the successful loading state visible long enough to be understandable.
             val remaining = MINIMUM_INITIALIZATION_SCREEN_MS - (SystemClock.elapsedRealtime() - startedAt)
             if (remaining > 0) delay(remaining)
-            _state.update { it.copy(startupStage = StartupStage.READY, startupProgress = 1f) }
+            _state.update {
+                it.copy(
+                    startupStage = StartupStage.READY,
+                    startupProgress = 1f,
+                    installedAgentVersions = installer.installedAgentVersions(),
+                )
+            }
             pingApi()
             checkForAppUpdate()
         } else {
@@ -1045,16 +1267,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun finishOnboarding(profile: ProviderProfile, secret: String) {
-        if (secret.isNotBlank()) {
-            vault.put(profile.kind.name, secret)
-        }
+        vault.put(profile.kind.name, secret)
         val saved = profile.copy(
             hasSecret = secret.isNotBlank() || vault.contains(profile.kind.name),
         )
-        preferences.saveProvider(saved)
+        preferences.saveProvider(saved, _state.value.agentKind)
         preferences.onboardingComplete = true
         _state.update { it.copy(onboardingComplete = true, provider = saved, startupStage = StartupStage.READY) }
+        refreshActiveApiKey(profile.kind)
         pingApi()
+    }
+
+    fun finishAntigravityOnboarding() {
+        check(_state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN) {
+            "Sign in to Antigravity first"
+        }
+        preferences.onboardingComplete = true
+        _state.update { it.copy(onboardingComplete = true, startupStage = StartupStage.READY) }
+    }
+
+    /** Lets first-run users escape a provider/login failure without losing saved credentials. */
+    fun chooseOnboardingAgent(kind: AgentKind) {
+        selectAgent(kind)
+        _state.update {
+            it.copy(
+                startupStage = if (installer.isAgentInstalled(kind)) {
+                    StartupStage.MODEL_SETUP
+                } else {
+                    StartupStage.SETUP_REQUIRED
+                },
+                startupError = null,
+                startupErrorIsOffline = false,
+            )
+        }
     }
 
     fun updateProvider(profile: ProviderProfile, secret: String) = finishOnboarding(profile, secret)
@@ -1062,6 +1307,286 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun finishBackgroundSetup() {
         preferences.backgroundSetupComplete = true
         _state.update { it.copy(backgroundSetupComplete = true) }
+    }
+
+    /** Called from the first-launch setup screen; persists the agent choice for setup and Settings. */
+    fun selectAgent(kind: AgentKind) {
+        if (_state.value.agentKind == kind) return
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current agent before switching.") }
+            return
+        }
+        val selectingInitialAgent = !preferences.runtimeSetupComplete
+        preferences.agentKind = kind.stableId
+        if (selectingInitialAgent) preferences.primaryAgentKind = kind.stableId
+        _state.update { current ->
+            preferences.saveProvider(current.provider, current.agentKind)
+            val provider = preferences.loadProvider(vault, kind)
+            current.copy(
+                agentKind = kind,
+                primaryAgentKind = if (selectingInitialAgent) kind else current.primaryAgentKind,
+                provider = provider,
+                activeApiKeyName = vault.list(provider.kind.name).firstOrNull(ApiKeyInfo::isActive)?.name,
+                // Ping results belong to the previous agent; never leak them across.
+                apiPingStatus = ApiPingStatus.IDLE,
+                apiPingMessage = null,
+            )
+        }
+    }
+
+    /** Installs the other agent on demand (Settings) with live progress, then switches to it. */
+    fun installAgent(kind: AgentKind) {
+        if (_state.value.agentInstalling != null) return
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current agent before switching.") }
+            return
+        }
+        if (installer.isAgentInstalled(kind)) {
+            selectAgent(kind)
+            return
+        }
+        _state.update {
+            it.copy(
+                agentInstalling = kind,
+                agentMessage = "Preparing ${kind.title}…",
+                agentProgress = 0f,
+                agentDownloadedBytes = null,
+                agentTotalBytes = null,
+                agentBytesPerSecond = null,
+            )
+        }
+        viewModelScope.launch {
+            var sampleBytes = 0L
+            var sampleAt = SystemClock.elapsedRealtime()
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    agentRegistry.require(kind).install(installer) { progress ->
+                        val now = SystemClock.elapsedRealtime()
+                        val bytes = progress.downloadedBytes
+                        val elapsed = now - sampleAt
+                        val speed = if (bytes != null && elapsed >= 500L) {
+                            ((bytes - sampleBytes).coerceAtLeast(0L) * 1_000L / elapsed.coerceAtLeast(1L)).also {
+                                sampleBytes = bytes
+                                sampleAt = now
+                            }
+                        } else _state.value.agentBytesPerSecond
+                        _state.update { current ->
+                            current.copy(
+                                agentMessage = progress.message,
+                                agentProgress = progress.fraction.coerceIn(0f, 1f),
+                                agentDownloadedBytes = bytes ?: current.agentDownloadedBytes,
+                                agentTotalBytes = progress.totalBytes ?: current.agentTotalBytes,
+                                agentBytesPerSecond = speed,
+                            )
+                        }
+                    }
+                }
+            }
+            result.onSuccess {
+                if (kind == AgentKind.DEEPSEEK_HARNESS) preferences.dshVersion = installer.dshVersion
+                selectAgent(kind)
+            }
+            _state.update { current ->
+                current.copy(
+                    installedAgentVersions = installer.installedAgentVersions(),
+                    agentInstalling = null,
+                    agentProgress = 0f,
+                    agentDownloadedBytes = null,
+                    agentTotalBytes = null,
+                    agentBytesPerSecond = null,
+                    agentMessage = result.fold(
+                        onSuccess = { "${kind.title} is ready" },
+                        onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: "Could not install ${kind.title}" },
+                    ),
+                )
+            }
+        }
+    }
+
+    fun checkAgentUpdates() {
+        if (_state.value.agentUpdatesChecking || _state.value.agentUpdating != null || _state.value.isRunning) return
+        _state.update { it.copy(agentUpdatesChecking = true, agentUpdateMessage = "Checking official agent releases…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { installer.checkAgentUpdates() } }
+            _state.update {
+                it.copy(
+                    agentUpdates = result.getOrDefault(emptyMap()),
+                    agentUpdatesChecking = false,
+                    agentUpdateMessage = result.fold(
+                        onSuccess = { updates -> if (updates.isEmpty()) "All installed agents are up to date" else "${updates.size} agent update${if (updates.size == 1) "" else "s"} available" },
+                        onFailure = { error -> error.message?.take(200) ?: "Could not check agent updates" },
+                    ),
+                )
+            }
+        }
+    }
+
+    fun updateAgent(kind: AgentKind) {
+        val update = _state.value.agentUpdates[kind] ?: return
+        if (_state.value.agentUpdating != null || _state.value.agentInstalling != null || _state.value.isRunning) return
+        _state.update {
+            it.copy(
+                agentUpdating = kind,
+                agentUpdateMessage = "Preparing ${kind.title} ${update.latestVersion}…",
+                agentUpdateProgress = 0f,
+                agentUpdateDownloadedBytes = null,
+                agentUpdateTotalBytes = null,
+                agentUpdateBytesPerSecond = null,
+            )
+        }
+        viewModelScope.launch {
+            var sampleBytes = 0L
+            var sampleAt = SystemClock.elapsedRealtime()
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    installer.updateAgent(kind, update.latestVersion) { progress ->
+                        val now = SystemClock.elapsedRealtime()
+                        val bytes = progress.downloadedBytes
+                        val elapsed = now - sampleAt
+                        val speed = if (bytes != null && elapsed >= 500L) {
+                            ((bytes - sampleBytes).coerceAtLeast(0L) * 1_000L / elapsed.coerceAtLeast(1L)).also {
+                                sampleBytes = bytes
+                                sampleAt = now
+                            }
+                        } else _state.value.agentUpdateBytesPerSecond
+                        _state.update {
+                            it.copy(
+                                agentUpdateMessage = progress.message,
+                                agentUpdateProgress = progress.fraction.coerceIn(0f, 1f),
+                                agentUpdateDownloadedBytes = bytes ?: it.agentUpdateDownloadedBytes,
+                                agentUpdateTotalBytes = progress.totalBytes ?: it.agentUpdateTotalBytes,
+                                agentUpdateBytesPerSecond = speed,
+                            )
+                        }
+                    }
+                }
+            }
+            _state.update { current ->
+                current.copy(
+                    installedAgentVersions = installer.installedAgentVersions(),
+                    agentUpdates = if (result.isSuccess) current.agentUpdates - kind else current.agentUpdates,
+                    agentUpdating = null,
+                    agentUpdateMessage = result.fold(
+                        onSuccess = { "${kind.title} updated to ${update.latestVersion}" },
+                        onFailure = { error -> error.message?.take(220) ?: "Could not update ${kind.title}" },
+                    ),
+                    agentUpdateProgress = if (result.isSuccess) 1f else 0f,
+                    agentUpdateDownloadedBytes = null,
+                    agentUpdateTotalBytes = null,
+                    agentUpdateBytesPerSecond = null,
+                )
+            }
+        }
+    }
+
+    fun startAntigravityLogin() {
+        if (_state.value.agentInstalling != null || _state.value.isRunning) return
+        lastOpenedAntigravityAuthUrl = null
+        viewModelScope.launch { antigravityAuthController.beginLogin() }
+    }
+
+    fun submitAntigravityCode(code: String) {
+        runCatching { antigravityAuthController.submitCode(code) }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not submit the code") } }
+    }
+
+    fun logoutAntigravity() {
+        viewModelScope.launch {
+            runCatching { antigravityAuthController.logout() }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not sign out") } }
+        }
+    }
+
+    fun setAntigravityModel(model: String) {
+        preferences.antigravityModel = model
+        val modelEffort = antigravityEffortFromModel(model)
+        if (modelEffort != null) preferences.antigravityEffort = modelEffort
+        _state.update {
+            it.copy(
+                antigravityModel = model,
+                antigravityEffort = modelEffort ?: it.antigravityEffort,
+            )
+        }
+    }
+
+    fun setAntigravityEffort(effort: String) {
+        if (effort !in setOf("low", "medium", "high")) return
+        val current = _state.value
+        val matchingModel = antigravityModelWithEffort(current.antigravityModel, effort)
+            ?.takeIf { candidate -> current.antigravityModels.isEmpty() || candidate in current.antigravityModels }
+        if (current.antigravityModel.isNotBlank() &&
+            antigravityEffortFromModel(current.antigravityModel) != null &&
+            matchingModel == null
+        ) {
+            _state.update { it.copy(toastMessage = "This model does not offer ${effort.replaceFirstChar(Char::uppercase)} reasoning") }
+            return
+        }
+        preferences.antigravityEffort = effort
+        matchingModel?.let { preferences.antigravityModel = it }
+        _state.update {
+            it.copy(
+                antigravityEffort = effort,
+                antigravityModel = matchingModel ?: it.antigravityModel,
+            )
+        }
+    }
+
+    fun refreshAntigravityModels() {
+        if (_state.value.antigravityModelsLoading || !installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) return
+        _state.update { it.copy(antigravityModelsLoading = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val runtime = installer.installedRuntime()
+                val workspace = File(getApplication<Application>().filesDir, "workspaces/antigravity-models").apply { mkdirs() }
+                val process = installer.process(
+                    runtime.proot,
+                    runtime.rootfs,
+                    workspace,
+                    emptyMap(),
+                    listOf(com.pocketforge.mobile.runtime.RuntimeInstaller.AGY_GUEST_PATH, "models"),
+                    guestWorkspacePath = "/workspace/antigravity-models",
+                    emulateHardLinks = false,
+                )
+                while (process.isAlive) delay(50)
+                check(process.waitFor() == 0) { "Could not list Antigravity models" }
+                val output = (process as? NativeSpawnProcess)?.outputFile?.readText().orEmpty()
+                output.lineSequence()
+                    .map { sanitizeTerminalOutput(it).trim() }
+                    .mapNotNull { line -> line.split(Regex("\\s+"), limit = 2).firstOrNull() }
+                    .filter { it.matches(Regex("[a-z0-9][a-z0-9._-]+")) }
+                    .distinct()
+                    .toList()
+                    .also { check(it.isNotEmpty()) { "Antigravity returned no models" } }
+            }
+            withContext(Dispatchers.Main) {
+                _state.update { current ->
+                    result.fold(
+                        onSuccess = { models ->
+                            val preferred = antigravityModelWithEffort(
+                                current.antigravityModel,
+                                current.antigravityEffort,
+                            )?.takeIf(models::contains)
+                            val selected = preferred
+                                ?: current.antigravityModel.takeIf(models::contains)
+                                ?: models.first()
+                            val selectedEffort = antigravityEffortFromModel(selected) ?: current.antigravityEffort
+                            preferences.antigravityModel = selected
+                            preferences.antigravityEffort = selectedEffort
+                            current.copy(
+                                antigravityModelsLoading = false,
+                                antigravityModels = models,
+                                antigravityModel = selected,
+                                antigravityEffort = selectedEffort,
+                            )
+                        },
+                        onFailure = { error -> current.copy(
+                            antigravityModelsLoading = false,
+                            toastMessage = error.message ?: "Could not load Antigravity models",
+                        ) },
+                    )
+                }
+            }
+        }
     }
 
     /** Called from the first-launch tool picker; persists the choice for setup and Settings. */
@@ -1080,22 +1605,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 devStackInstalling = stack,
+                devStackRemoving = false,
                 devStackMessage = "Preparing ${stack.label}…",
                 devStackProgress = 0f,
                 devStackBytes = null,
+                devStackBytesPerSecond = null,
             )
         }
         viewModelScope.launch {
+            var sampleBytes = 0L
+            var sampleTime = android.os.SystemClock.elapsedRealtime()
+            var latestSpeed: Long? = null
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     installer.ensureStackInstalled(stack) { progress ->
+                        val transfer = progress.totalBytes?.let { total ->
+                            (progress.downloadedBytes ?: 0L) to total
+                        }
+                        if (transfer != null) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            val elapsed = now - sampleTime
+                            val delta = transfer.first - sampleBytes
+                            if (delta < 0L) {
+                                sampleBytes = transfer.first
+                                sampleTime = now
+                                latestSpeed = null
+                            } else if (elapsed >= 500L) {
+                                latestSpeed = (delta * 1_000L / elapsed).coerceAtLeast(0L)
+                                sampleBytes = transfer.first
+                                sampleTime = now
+                            }
+                        } else {
+                            sampleBytes = 0L
+                            sampleTime = android.os.SystemClock.elapsedRealtime()
+                            latestSpeed = null
+                        }
                         _state.update { current ->
                             current.copy(
                                 devStackMessage = progress.message,
                                 devStackProgress = progress.fraction.coerceIn(0f, 1f),
-                                devStackBytes = progress.totalBytes?.let { total ->
-                                    (progress.downloadedBytes ?: 0L) to total
-                                },
+                                devStackBytes = transfer,
+                                devStackBytesPerSecond = latestSpeed,
                             )
                         }
                     }
@@ -1104,9 +1654,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { current ->
                 current.copy(
                     devStackInstalling = null,
+                    devStackRemoving = false,
                     installedDevStacks = if (result.isSuccess) current.installedDevStacks + stack else current.installedDevStacks,
                     devStackProgress = 0f,
                     devStackBytes = null,
+                    devStackBytesPerSecond = null,
                     devStackMessage = result.fold(
                         onSuccess = { "${stack.label} tools are ready" },
                         onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: "Could not install ${stack.label}" },
@@ -1116,38 +1668,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Uninstalls one development stack on demand (Settings) with live progress. */
+    /** Removes an optional toolchain after the Settings confirmation dialog. */
     fun removeDevStack(stack: DevStack) {
-        if (_state.value.devStackInstalling != null) return
-        if (stack == DevStack.WEB) return
+        if (_state.value.devStackInstalling != null || stack == DevStack.WEB) return
+        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+            _state.update { it.copy(toastMessage = "Stop running tasks and terminal commands before removing tools") }
+            return
+        }
         _state.update {
             it.copy(
                 devStackInstalling = stack,
+                devStackRemoving = true,
                 devStackMessage = "Removing ${stack.label}…",
-                devStackProgress = 0f,
+                devStackProgress = 0.1f,
                 devStackBytes = null,
+                devStackBytesPerSecond = null,
             )
         }
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                installer.removeStack(stack) { progress ->
-                    _state.update { current ->
-                        current.copy(
-                            devStackMessage = progress.message,
-                            devStackProgress = progress.fraction.coerceIn(0f, 1f),
-                        )
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    installer.removeStack(stack) { progress ->
+                        _state.update { current ->
+                            current.copy(
+                                devStackMessage = progress.message,
+                                devStackProgress = progress.fraction.coerceIn(0f, 1f),
+                            )
+                        }
                     }
                 }
             }
+            if (result.isSuccess) {
+                val selected = _state.value.selectedDevStacks - stack
+                preferences.selectedDevStacks = selected.map { it.name }.toSet()
+            }
             _state.update { current ->
                 current.copy(
-                    devStackInstalling = null,
+                    selectedDevStacks = if (result.isSuccess) current.selectedDevStacks - stack else current.selectedDevStacks,
                     installedDevStacks = if (result.isSuccess) current.installedDevStacks - stack else current.installedDevStacks,
+                    devStackInstalling = null,
+                    devStackRemoving = false,
                     devStackProgress = 0f,
-                    devStackBytes = null,
                     devStackMessage = result.fold(
-                        onSuccess = { "${stack.label} tools removed" },
-                        onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: "Could not remove ${stack.label}" },
+                        onSuccess = { "${stack.label} removed" },
+                        onFailure = { result.exceptionOrNull()?.message?.take(200) ?: "Could not remove ${stack.label}" },
+                    ),
+                    toastMessage = result.fold(
+                        onSuccess = { "${stack.label} removed" },
+                        onFailure = { "Could not remove ${stack.label}" },
                     ),
                 )
             }
@@ -1156,7 +1724,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
-        return providerApi.discoverModels(profile.baseUrl, key, profile.kind.protocol)
+        return providerApi.discoverModels(profile.baseUrl, key, providerProtocolForAgent(profile, _state.value.agentKind))
     }
 
     suspend fun validateProvider(
@@ -1165,24 +1733,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         models: List<com.pocketforge.mobile.network.DiscoveredModel>,
     ): ConnectionValidation {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
-        if (profile.kind == ProviderKind.CLAUDE) {
-            return if (key.isNotBlank()) {
-                ConnectionValidation.Success("Claude subscription setup token is saved.")
-            } else {
-                ConnectionValidation.Failure("Please enter your Claude subscription setup token.")
-            }
-        }
-        return providerApi.validate(profile.baseUrl, profile.model, key, profile.kind.protocol, models)
+        return providerApi.validate(
+            profile.baseUrl,
+            profile.model,
+            key,
+            providerProtocolForAgent(profile, _state.value.agentKind),
+            models,
+        )
     }
 
     fun pingApi() {
+        if (_state.value.agentKind == AgentKind.ANTIGRAVITY) {
+            testAntigravityConnection()
+            return
+        }
         val profile = _state.value.provider
         if (profile.baseUrl.isBlank() || profile.model.isBlank()) return
         if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
         _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Sending a minimal test request…") }
         viewModelScope.launch {
             val key = vault.get(profile.kind.name).orEmpty()
-            val result = providerApi.validate(profile.baseUrl, profile.model, key, profile.kind.protocol, emptyList())
+            val result = providerApi.validate(
+                profile.baseUrl,
+                profile.model,
+                key,
+                providerProtocolForAgent(profile, _state.value.agentKind),
+                emptyList(),
+            )
             when (result) {
                 is ConnectionValidation.Success -> _state.update {
                     it.copy(apiPingStatus = ApiPingStatus.OK, apiPingMessage = "API responded successfully")
@@ -1194,8 +1771,79 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Sends a tiny hello to the agy CLI to prove it actually answers. Silent timeout inside. */
+    fun testAntigravityConnection() {
+        if (_state.value.agentKind != AgentKind.ANTIGRAVITY) return
+        if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
+        if (_state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
+            _state.update {
+                it.copy(
+                    apiPingStatus = ApiPingStatus.FAILED,
+                    apiPingMessage = "Antigravity needs Google sign-in",
+                )
+            }
+            return
+        }
+        _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Saying hello to Antigravity…") }
+        viewModelScope.launch {
+            val result = runCatching { antigravityRuntime.hello() }
+            result.onSuccess {
+                _state.update {
+                    it.copy(
+                        apiPingStatus = ApiPingStatus.OK,
+                        apiPingMessage = "Antigravity is Working!",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(apiPingStatus = ApiPingStatus.FAILED, apiPingMessage = helloFailureMessage(error.message.orEmpty()))
+                }
+            }
+        }
+    }
+
+    private fun helloFailureMessage(raw: String): String {
+        val value = raw.replace(Regex("\\s+"), " ").trim()
+        return when {
+            value.contains("not installed", true) -> "Antigravity CLI is not installed. Install it from the Coding agent section."
+            value.contains("sign-in", true) || value.contains("not signed in", true) ||
+                value.contains("authentication", true) -> "Antigravity needs Google sign-in. Reconnect from the Google connection section."
+            value.contains("did not answer", true) -> "Antigravity did not answer. Try again."
+            value.isBlank() -> "Antigravity did not answer. Try again."
+            else -> value.take(200)
+        }
+    }
+
     fun openProject(project: Project) {
-        runtime.configureProjectRoot(project.id, project.rootPath)
+        val current = _state.value
+        if (current.activeProject?.id == project.id) {
+            _state.update {
+                it.copy(
+                    workspaceVisible = true,
+                    readOnlyProject = null,
+                    readOnlyProjectChats = emptyList(),
+                    readOnlyChatId = null,
+                    readOnlyMessages = emptyList(),
+                )
+            }
+            return
+        }
+        if (current.isRunning || current.projectTerminalRunning) {
+            val chats = preferences.loadProjectChats(project.id).ifEmpty {
+                listOf(ProjectChat(title = "Main chat"))
+            }
+            val chat = chats.first()
+            _state.update {
+                it.copy(
+                    readOnlyProject = project,
+                    readOnlyProjectChats = chats,
+                    readOnlyChatId = chat.id,
+                    readOnlyMessages = preferences.loadMessages(project.id, chat.id),
+                )
+            }
+            return
+        }
+        configureBridgeRoots(project.id, project.rootPath)
         val terminal = loadProjectTerminal(project)
         val suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null
         val chats = preferences.loadProjectChats(project.id).ifEmpty {
@@ -1207,6 +1855,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 activeProject = project,
+                workspaceVisible = true,
+                readOnlyProject = null,
+                readOnlyProjectChats = emptyList(),
+                readOnlyChatId = null,
+                readOnlyMessages = emptyList(),
                 projectChats = chats,
                 activeChatId = activeChat.id,
                 messages = msgs,
@@ -1233,7 +1886,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         refreshProjectFiles()
         viewModelScope.launch {
-            val pending = runtime.loadPendingChanges(project.id)
+            val pending = activeRuntime().loadPendingChanges(project.id)
             if (_state.value.activeProject?.id == project.id) _state.update { it.copy(changes = pending) }
         }
     }
@@ -1241,10 +1894,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun closeProject() {
         val active = _state.value.activeProject
         persistMessages()
-        if (_state.value.isRunning) {
-            viewModelScope.launch { runtime.stopActiveSession() }
+        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+            _state.update {
+                it.copy(
+                    workspaceVisible = false,
+                    toastMessage = if (it.isRunning) {
+                        "Task continues in the background"
+                    } else {
+                        "Terminal command continues in the background"
+                    },
+                )
+            }
+            return
         }
-        if (_state.value.projectTerminalRunning) stopProjectTerminalCommand()
 
         if (active != null) {
             val chats = preferences.loadProjectChats(active.id)
@@ -1271,6 +1933,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 activeProject = null,
+                workspaceVisible = false,
                 projectChats = emptyList(),
                 activeChatId = null,
                 changes = emptyList(),
@@ -1295,10 +1958,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun closeReadOnlyProject() {
+        _state.update {
+            it.copy(
+                readOnlyProject = null,
+                readOnlyProjectChats = emptyList(),
+                readOnlyChatId = null,
+                readOnlyMessages = emptyList(),
+            )
+        }
+    }
+
+    fun switchReadOnlyChat(chatId: String) {
+        val project = _state.value.readOnlyProject ?: return
+        if (_state.value.readOnlyProjectChats.none { it.id == chatId }) return
+        _state.update {
+            it.copy(
+                readOnlyChatId = chatId,
+                readOnlyMessages = preferences.loadMessages(project.id, chatId),
+            )
+        }
+    }
+
+    fun activateReadOnlyProject() {
+        if (_state.value.isRunning || _state.value.projectTerminalRunning) return
+        val project = _state.value.readOnlyProject ?: return
+        closeReadOnlyProject()
+        openProject(project)
+    }
+
     fun consumeToast() = _state.update { it.copy(toastMessage = null) }
 
     fun createProject(name: String) {
         if (name.isBlank()) return
+        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+            _state.update { it.copy(toastMessage = "Stop the background task before creating another project") }
+            return
+        }
         val baseSlug = projectSlug(name)
         val usedSlugs = _state.value.projects.mapTo(mutableSetOf()) { it.slug }
         val slug = generateSequence(1) { it + 1 }
@@ -1310,12 +2006,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             language = "TypeScript",
             slug = slug,
         )
-        runtime.configureProjectRoot(project.id, project.rootPath)
+        configureBridgeRoots(project.id, project.rootPath)
         val guestRoot = projectGuestRoot(project)
         _state.update {
             it.copy(
                 projects = listOf(project) + it.projects,
                 activeProject = project,
+                workspaceVisible = true,
                 messages = listOf(ChatMessage(fromUser = false, text = "Hi! Tell me what you want to build or change.")),
                 liveProcess = emptyList(),
                 liveThinking = false,
@@ -1346,6 +2043,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun createQuickProject() {
+        if (_state.value.isRunning || _state.value.projectTerminalRunning) {
+            _state.update { it.copy(toastMessage = "Stop the background task before creating another project") }
+            return
+        }
         val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
         val project = Project(
             name = identity.displayName,
@@ -1360,6 +2061,550 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(projects = listOf(project) + it.projects) }
         preferences.saveProjects(_state.value.projects)
         openProject(project)
+    }
+
+    fun importZipProject(uri: Uri) {
+        if (_state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning) return
+        _state.update { it.copy(projectImporting = true, projectImportMessage = "Reading project archive…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { extractImportedProject(uri) } }
+            result.onSuccess { imported ->
+                val project = imported.project
+                val firstChat = ProjectChat(title = "New chat")
+                preferences.saveProjectChats(project.id, listOf(firstChat))
+                _state.update { current ->
+                    current.copy(
+                        projects = listOf(project) + current.projects,
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = "${project.name} imported successfully",
+                    )
+                }
+                preferences.saveProjects(_state.value.projects)
+                openProject(project)
+                _state.update { it.copy(pendingAttachments = listOf(imported.sourceAttachment)) }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = "Import failed: ${error.message?.take(180) ?: "Invalid ZIP archive"}",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun extractImportedProject(uri: Uri): ImportedZipProject {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        var archiveName = "Imported project.zip"
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { index ->
+                    archiveName = cursor.getString(index) ?: archiveName
+                }
+            }
+        }
+        val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+        val projectId = UUID.randomUUID().toString()
+        val destination = File(app.filesDir, "workspaces/$projectId")
+        destination.mkdirs()
+        val destinationPath = destination.canonicalFile.toPath()
+        val availableLimit = (destination.usableSpace * 8L / 10L).coerceAtMost(MAX_IMPORTED_PROJECT_BYTES)
+        var extractedBytes = 0L
+        var entries = 0
+        try {
+            val source = resolver.openInputStream(uri) ?: error("The selected ZIP could not be opened")
+            source.buffered().use { input ->
+                ZipInputStream(input).use { zip ->
+                    while (true) {
+                        val entry = zip.nextEntry ?: break
+                        entries++
+                        require(entries <= MAX_IMPORTED_ZIP_ENTRIES) { "The ZIP contains too many files" }
+                        val entryName = entry.name.replace('\\', '/').trimStart('/')
+                        require(entryName.isNotBlank() && '\u0000' !in entryName) { "The ZIP contains an invalid path" }
+                        if (entryName.startsWith("__MACOSX/") || entryName.endsWith("/.DS_Store") || entryName == ".DS_Store") {
+                            zip.closeEntry()
+                            continue
+                        }
+                        val target = File(destination, entryName).canonicalFile
+                        require(target.toPath().startsWith(destinationPath)) { "The ZIP contains an unsafe path" }
+                        if (entry.isDirectory) {
+                            target.mkdirs()
+                        } else {
+                            target.parentFile?.mkdirs()
+                            target.outputStream().buffered().use { output ->
+                                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                                while (true) {
+                                    val count = zip.read(buffer)
+                                    if (count < 0) break
+                                    extractedBytes += count
+                                    require(extractedBytes <= availableLimit) { "The extracted project is too large for available storage" }
+                                    output.write(buffer, 0, count)
+                                }
+                            }
+                            if (entry.time > 0) target.setLastModified(entry.time)
+                        }
+                        zip.closeEntry()
+                    }
+                }
+            }
+            require(entries > 0 && destination.walkTopDown().any { it.isFile }) { "The ZIP does not contain project files" }
+            val preliminary = Project(
+                id = projectId,
+                name = identity.displayName,
+                description = "Imported project workspace",
+                language = "General",
+                slug = identity.slug,
+                kind = ProjectKind.QUICK_PROJECT,
+            )
+            val nestedRoot = detectNestedProjectRoot(preliminary)
+            val projectRoot = nestedRoot?.let { File(destination, it) } ?: destination
+            val metadata = detectImportedProjectMetadata(projectRoot)
+            val safeArchiveName = sanitizeAttachmentName(archiveName).let { name ->
+                if (name.endsWith(".zip", ignoreCase = true)) name else "$name.zip"
+            }
+            val archiveFolder = File(projectRoot, ".pocketdev/imports").apply { mkdirs() }
+            val archivedSource = File(archiveFolder, safeArchiveName)
+            var sourceBytes = 0L
+            resolver.openInputStream(uri)?.buffered()?.use { input ->
+                archivedSource.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        sourceBytes += count
+                        require(extractedBytes + sourceBytes <= availableLimit) { "The imported project is too large for available storage" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } ?: error("The selected ZIP could not be preserved")
+            val project = preliminary.copy(
+                description = metadata.first,
+                language = metadata.second,
+                rootPath = nestedRoot.orEmpty(),
+            )
+            return ImportedZipProject(
+                project = project,
+                sourceAttachment = ChatAttachment(
+                    displayName = archiveName.take(120),
+                    relativePath = archivedSource.relativeTo(projectRoot).invariantSeparatorsPath,
+                    mimeType = "application/zip",
+                    sizeBytes = sourceBytes,
+                ),
+            )
+        } catch (error: Throwable) {
+            destination.deleteRecursively()
+            throw error
+        }
+    }
+
+    private fun detectImportedProjectMetadata(root: File): Pair<String, String> {
+        val names = root.walkTopDown().maxDepth(3).filter(File::isFile).map { it.name.lowercase() }.toSet()
+        return when {
+            names.any { it == "settings.gradle.kts" || it == "build.gradle.kts" } -> "Imported Gradle project" to "Kotlin"
+            names.any { it == "settings.gradle" || it == "build.gradle" } -> "Imported Gradle project" to "Java"
+            "package.json" in names && names.any { it == "tsconfig.json" || it.endsWith(".ts") || it.endsWith(".tsx") } -> "Imported web project" to "TypeScript"
+            "package.json" in names -> "Imported web project" to "JavaScript"
+            names.any { it == "pyproject.toml" || it == "requirements.txt" || it.endsWith(".py") } -> "Imported Python project" to "Python"
+            names.any { it == "cargo.toml" || it.endsWith(".rs") } -> "Imported Rust project" to "Rust"
+            names.any { it == "go.mod" || it.endsWith(".go") } -> "Imported Go project" to "Go"
+            else -> "Imported ZIP project" to "General"
+        }
+    }
+
+    fun clonePublicGitRepository(url: String) {
+        cloneGitRepository(url = url, repositoryName = null, branch = null, useGitHubCli = false)
+    }
+
+    fun cloneGitHubRepository(repository: GitHubRepository) {
+        if (_state.value.githubAuthStatus != GitHubAuthStatus.CONNECTED) {
+            _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.DISCONNECTED, githubMessage = "Connect GitHub again") }
+            return
+        }
+        cloneGitRepository(repository.cloneUrl, repository.fullName, repository.defaultBranch, useGitHubCli = true)
+    }
+
+    private fun cloneGitRepository(url: String, repositoryName: String?, branch: String?, useGitHubCli: Boolean) {
+        if (_state.value.gitCloneRunning || _state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning) return
+        val normalized = runCatching { validateGitUrl(url) }.getOrElse { error ->
+            _state.update { it.copy(toastMessage = error.message ?: "Enter a valid public HTTPS Git URL") }
+            return
+        }
+        _state.update { it.copy(gitCloneRunning = true, gitCloneMessage = "Connecting to Git repository…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+                    val projectId = UUID.randomUUID().toString()
+                    val workspace = File(getApplication<Application>().filesDir, "workspaces/$projectId").apply { mkdirs() }
+                    val output = File(getApplication<Application>().cacheDir, "git-clone-${System.nanoTime()}.log")
+                    try {
+                        val environment = mutableMapOf(
+                            "GIT_TERMINAL_PROMPT" to "0",
+                            "GIT_LFS_SKIP_SMUDGE" to "1",
+                            "GH_PROMPT_DISABLED" to "1",
+                            "GH_NO_UPDATE_NOTIFIER" to "1",
+                        )
+                        val installed = installer.installedRuntime()
+                        val command = if (useGitHubCli && repositoryName != null) {
+                            buildList {
+                                addAll(listOf(RuntimeInstaller.GITHUB_CLI_GUEST_PATH, "repo", "clone", repositoryName, ".", "--", "--progress", "--single-branch"))
+                                branch?.takeIf(String::isNotBlank)?.let { addAll(listOf("--branch", it)) }
+                            }
+                        } else {
+                            buildList {
+                                addAll(listOf("git", "clone", "--progress", "--single-branch"))
+                                branch?.takeIf(String::isNotBlank)?.let { addAll(listOf("--branch", it)) }
+                                add(normalized)
+                                add(".")
+                            }
+                        }
+                        _state.update { it.copy(gitCloneMessage = "Cloning ${repositoryName ?: normalized.substringAfterLast('/').removeSuffix(".git")}…") }
+                        val process = installer.process(
+                            installed.proot,
+                            installed.rootfs,
+                            workspace,
+                            environment,
+                            command,
+                            guestWorkspacePath = "/workspace/${identity.slug}",
+                            outputFile = output,
+                        )
+                        val exit = process.waitFor()
+                        val details = output.readText().trim()
+                        check(exit == 0) { details.takeLast(600).ifBlank { "Git clone failed with exit code $exit" } }
+                        val metadata = detectImportedProjectMetadata(workspace)
+                        Project(
+                            id = projectId,
+                            name = identity.displayName,
+                            description = repositoryName?.let { "GitHub · $it" } ?: "Imported Git repository",
+                            language = metadata.second,
+                            slug = identity.slug,
+                            kind = ProjectKind.QUICK_PROJECT,
+                        )
+                    } catch (error: Throwable) {
+                        workspace.deleteRecursively()
+                        throw error
+                    } finally {
+                        output.delete()
+                    }
+                }
+            }
+            result.onSuccess { project ->
+                val chat = ProjectChat(title = "New chat")
+                preferences.saveProjectChats(project.id, listOf(chat))
+                _state.update { current -> current.copy(projects = listOf(project) + current.projects) }
+                preferences.saveProjects(_state.value.projects)
+                openProject(project)
+                _state.update { it.copy(gitCloneRunning = false, gitCloneMessage = null, toastMessage = "Repository cloned successfully") }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        gitCloneRunning = false,
+                        gitCloneMessage = null,
+                        toastMessage = "Clone failed: ${error.message?.lineSequence()?.lastOrNull()?.take(180) ?: "Unknown error"}",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun validateGitUrl(value: String): String {
+        val clean = value.trim()
+        val uri = URI(clean)
+        require(uri.scheme.equals("https", ignoreCase = true)) { "Only HTTPS Git URLs are supported" }
+        require(uri.userInfo == null && uri.fragment == null && uri.host?.isNotBlank() == true) { "Enter a valid HTTPS Git URL without credentials" }
+        require(uri.host != "localhost" && uri.host != "127.0.0.1" && uri.host != "::1") { "Local Git URLs are not supported" }
+        require(uri.path.count { it == '/' } >= 2) { "The URL must identify a Git repository" }
+        return uri.toASCIIString()
+    }
+
+    fun startGitHubLogin() {
+        if (_state.value.githubAuthStatus == GitHubAuthStatus.STARTING || _state.value.githubAuthStatus == GitHubAuthStatus.AWAITING_USER) return
+        _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.STARTING, githubMessage = "Preparing official GitHub sign-in…") }
+        startGitHubForegroundOperation()
+        githubAuthJob = viewModelScope.launch {
+            try {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    installer.ensureGitHubCliInstalled { progress ->
+                        _state.update { it.copy(githubMessage = progress.message) }
+                    }
+                    val runtime = installer.installedRuntime()
+                    val outputFile = File(getApplication<Application>().cacheDir, "github-auth-${System.nanoTime()}.log")
+                    val workspace = File(getApplication<Application>().filesDir, "workspaces/github-auth").apply { mkdirs() }
+                    val process = installer.process(
+                        runtime.proot,
+                        runtime.rootfs,
+                        workspace,
+                        githubCliEnvironment(),
+                        listOf(
+                            RuntimeInstaller.GITHUB_CLI_GUEST_PATH,
+                            "auth", "login",
+                            "--hostname", "github.com",
+                            "--git-protocol", "https",
+                            "--web",
+                            "--insecure-storage",
+                        ),
+                        guestWorkspacePath = "/workspace/github-auth",
+                        outputFile = outputFile,
+                    )
+                    githubAuthProcess = process
+                    var offset = 0L
+                    val captured = StringBuilder()
+                    var browserOpened = false
+                    try {
+                        while (process.isAlive || outputFile.length() > offset) {
+                            if (outputFile.length() > offset) {
+                                val count = (outputFile.length() - offset).coerceAtMost(16L * 1024).toInt()
+                                val bytes = ByteArray(count)
+                                RandomAccessFile(outputFile, "r").use { file -> file.seek(offset); file.readFully(bytes) }
+                                offset += count
+                                captured.append(bytes.toString(Charsets.UTF_8))
+                                val clean = sanitizeTerminalOutput(captured.toString()).takeLast(20_000)
+                                val code = GITHUB_DEVICE_CODE.find(clean)?.value
+                                if (code != null && !browserOpened) {
+                                    browserOpened = true
+                                    _state.update {
+                                        it.copy(
+                                            githubAuthStatus = GitHubAuthStatus.AWAITING_USER,
+                                            githubUserCode = code,
+                                            githubVerificationUri = GITHUB_DEVICE_URL,
+                                            githubMessage = "Enter this one-time code on GitHub",
+                                        )
+                                    }
+                                    openExternalUrl(GITHUB_DEVICE_URL)
+                                }
+                            } else {
+                                delay(100)
+                            }
+                        }
+                        val exit = process.waitFor()
+                        check(exit == 0) {
+                            sanitizeTerminalOutput(captured.toString()).lineSequence().lastOrNull { it.isNotBlank() }
+                                ?: "GitHub sign-in failed (exit $exit)"
+                        }
+                    } finally {
+                        githubAuthProcess = null
+                        outputFile.delete()
+                    }
+                    githubAccountLogin() ?: error("GitHub connected, but the account could not be identified")
+                }
+            }
+            result.onSuccess { login ->
+                preferences.githubLogin = login
+                _state.update {
+                    it.copy(
+                        githubAuthStatus = GitHubAuthStatus.CONNECTED,
+                        githubLogin = login,
+                        githubUserCode = null,
+                        githubVerificationUri = null,
+                        githubMessage = "Connected as @$login",
+                    )
+                }
+                refreshGitHubRepositories()
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        githubAuthStatus = GitHubAuthStatus.ERROR,
+                        githubUserCode = null,
+                        githubVerificationUri = null,
+                        githubMessage = error.message?.take(240) ?: "GitHub sign-in failed",
+                    )
+                }
+            }
+            } finally {
+                stopGitHubForegroundOperation()
+                githubAuthJob = null
+            }
+        }
+    }
+
+    fun generateNewGitHubCode() {
+        githubAuthProcess?.destroy()
+        githubAuthJob?.cancel()
+        githubAuthProcess = null
+        githubAuthJob = null
+        stopGitHubForegroundOperation()
+        _state.update {
+            it.copy(
+                githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+                githubUserCode = null,
+                githubVerificationUri = null,
+                githubMessage = "Generating a new GitHub code…",
+            )
+        }
+        startGitHubLogin()
+    }
+
+    fun refreshGitHubRepositories() {
+        if (_state.value.githubAuthStatus != GitHubAuthStatus.CONNECTED) return
+        if (_state.value.githubRepositoriesLoading) return
+        _state.update { it.copy(githubRepositoriesLoading = true, githubMessage = "Loading repositories…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { githubRepositoriesFromCli() } }
+            result.onSuccess { repositories ->
+                _state.update {
+                    it.copy(
+                        githubRepositories = repositories,
+                        githubRepositoriesLoading = false,
+                        githubMessage = "${repositories.size} repositories available",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        githubRepositoriesLoading = false,
+                        githubMessage = error.message ?: "Could not load GitHub repositories",
+                    )
+                }
+            }
+        }
+    }
+
+    fun disconnectGitHub() {
+        if (_state.value.githubAuthStatus == GitHubAuthStatus.STARTING) return
+        val login = _state.value.githubLogin
+        _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.STARTING, githubMessage = "Signing out of GitHub…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val command = buildList {
+                        addAll(listOf("auth", "logout", "--hostname", "github.com"))
+                        login?.takeIf(String::isNotBlank)?.let { addAll(listOf("--user", it)) }
+                    }
+                    val output = runGitHubCli(command)
+                    check(output.first == 0) { output.second.lineSequence().lastOrNull { it.isNotBlank() } ?: "GitHub logout failed" }
+                }
+            }
+            result.onSuccess {
+                preferences.githubLogin = ""
+                _state.update {
+                    it.copy(
+                        githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+                        githubLogin = null,
+                        githubUserCode = null,
+                        githubVerificationUri = null,
+                        githubRepositories = emptyList(),
+                        githubMessage = "Signed out",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.ERROR, githubMessage = error.message ?: "Could not sign out") }
+            }
+        }
+    }
+
+    private suspend fun refreshGitHubConnection() = withContext(Dispatchers.IO) {
+        if (!installer.isGitHubCliInstalled()) return@withContext
+        val login = runCatching { githubAccountLogin() }.getOrNull()
+        if (login.isNullOrBlank()) {
+            preferences.githubLogin = ""
+            _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.DISCONNECTED, githubLogin = null) }
+        } else {
+            preferences.githubLogin = login
+            _state.update {
+                it.copy(
+                    githubAuthStatus = GitHubAuthStatus.CONNECTED,
+                    githubLogin = login,
+                    githubMessage = "Connected as @$login",
+                )
+            }
+        }
+    }
+
+    private fun githubCliEnvironment(): Map<String, String> = mapOf(
+        "GH_PROMPT_DISABLED" to "1",
+        "GH_NO_UPDATE_NOTIFIER" to "1",
+        // Android PRoot has no Secret Service. This keeps the official gh-owned
+        // credential in PocketForge's private Linux home instead of exporting it.
+        "BROWSER" to "/bin/false",
+    )
+
+    private fun runGitHubCli(arguments: List<String>): Pair<Int, String> {
+        check(installer.isGitHubCliInstalled()) { "GitHub CLI is not installed" }
+        val runtime = installer.installedRuntime()
+        val outputFile = File(getApplication<Application>().cacheDir, "github-cli-${System.nanoTime()}.log")
+        val workspace = File(getApplication<Application>().filesDir, "workspaces/github-auth").apply { mkdirs() }
+        return try {
+            val process = installer.process(
+                runtime.proot,
+                runtime.rootfs,
+                workspace,
+                githubCliEnvironment(),
+                listOf(RuntimeInstaller.GITHUB_CLI_GUEST_PATH) + arguments,
+                guestWorkspacePath = "/workspace/github-auth",
+                outputFile = outputFile,
+            )
+            val exit = process.waitFor()
+            exit to sanitizeTerminalOutput(outputFile.takeIf(File::isFile)?.readText().orEmpty()).trim()
+        } finally {
+            outputFile.delete()
+        }
+    }
+
+    private fun githubAccountLogin(): String? {
+        val (exit, output) = runGitHubCli(listOf("api", "user", "--jq", ".login"))
+        return output.lineSequence().lastOrNull { it.isNotBlank() }?.trim().takeIf { exit == 0 && !it.isNullOrBlank() }
+    }
+
+    private fun githubRepositoriesFromCli(): List<GitHubRepository> {
+        val endpoint = "user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100"
+        val (exit, output) = runGitHubCli(listOf("api", "--paginate", "--slurp", endpoint))
+        check(exit == 0) { output.lineSequence().lastOrNull { it.isNotBlank() } ?: "Could not load GitHub repositories" }
+        val pages = JSONArray(output)
+        val repositories = LinkedHashMap<String, GitHubRepository>()
+        for (pageIndex in 0 until pages.length()) {
+            val page = pages.optJSONArray(pageIndex) ?: continue
+            for (index in 0 until page.length()) {
+                val item = page.optJSONObject(index) ?: continue
+                val fullName = item.optString("full_name").takeIf(String::isNotBlank) ?: continue
+                repositories[fullName] = GitHubRepository(
+                    fullName = fullName,
+                    cloneUrl = item.optString("clone_url", "https://github.com/$fullName.git"),
+                    private = item.optBoolean("private"),
+                    defaultBranch = item.optString("default_branch", "main"),
+                    description = item.optString("description"),
+                    updatedAt = item.optString("updated_at"),
+                )
+            }
+        }
+        return repositories.values.toList()
+    }
+
+    private fun openExternalUrl(url: String) {
+        runCatching {
+            getApplication<Application>().startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure {
+            _state.update { state -> state.copy(toastMessage = "Could not open the browser. Copy the URL instead.") }
+        }
+    }
+
+    private fun startGitHubForegroundOperation() {
+        ContextCompat.startForegroundService(
+            getApplication(),
+            Intent(getApplication(), com.pocketforge.mobile.runtime.RuntimeExecutionService::class.java)
+                .setAction(com.pocketforge.mobile.runtime.RuntimeExecutionService.ACTION_START)
+                .putExtra(com.pocketforge.mobile.runtime.RuntimeExecutionService.EXTRA_PROJECT_NAME, "GitHub sign-in")
+                .putExtra(com.pocketforge.mobile.runtime.RuntimeExecutionService.EXTRA_TITLE, "Connecting GitHub")
+                .putExtra(com.pocketforge.mobile.runtime.RuntimeExecutionService.EXTRA_CAN_STOP, false),
+        )
+    }
+
+    private fun stopGitHubForegroundOperation() {
+        runCatching {
+            getApplication<Application>().startService(
+                Intent(getApplication(), com.pocketforge.mobile.runtime.RuntimeExecutionService::class.java)
+                    .setAction(com.pocketforge.mobile.runtime.RuntimeExecutionService.ACTION_CANCELLED),
+            )
+        }.onFailure {
+            getApplication<Application>().stopService(
+                Intent(getApplication(), com.pocketforge.mobile.runtime.RuntimeExecutionService::class.java),
+            )
+        }
     }
 
     fun renameProject(projectId: String, newName: String) {
@@ -1409,7 +2654,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val root = current.suggestedProjectRoot ?: return
         if (current.isRunning || current.projectTerminalRunning) return
         val updated = project.copy(rootPath = root)
-        runtime.configureProjectRoot(updated.id, updated.rootPath)
+        configureBridgeRoots(updated.id, updated.rootPath)
         val projects = current.projects.map { if (it.id == updated.id) updated else it }
         val guestRoot = projectGuestRoot(updated)
         preferences.saveProjects(projects)
@@ -1484,203 +2729,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun uploadProjectZip(uri: Uri) {
-        val resolver = getApplication<Application>().contentResolver
-        val rawName = queryDisplayName(uri)
-        val cleanName = rawName.substringBeforeLast('.', rawName)
-            .replace(Regex("[-_]+"), " ")
-            .trim()
-            .ifBlank { "Uploaded Project" }
-            .take(50)
-            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-
-        val baseSlug = projectSlug(cleanName)
-        val usedSlugs = _state.value.projects.mapTo(mutableSetOf()) { it.slug }
-        val slug = generateSequence(1) { it + 1 }
-            .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
-            .first { it !in usedSlugs }
-
-        val project = Project(
-            name = cleanName,
-            description = "Imported from $rawName",
-            language = "General",
-            slug = slug,
-            kind = ProjectKind.PROJECT,
-        )
-
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val baseDir = File(getApplication<Application>().filesDir, "workspaces/${project.id}").apply { mkdirs() }
-                    val stream = resolver.openInputStream(uri) ?: error("Unable to open selected file")
-                    val extractedCount = stream.use { extractZipStream(it, baseDir) }
-                    extractedCount
-                }
-            }
-
-            result.fold(
-                onSuccess = { count ->
-                    val firstChat = ProjectChat(title = "New chat")
-                    preferences.saveProjectChats(project.id, listOf(firstChat))
-                    _state.update { it.copy(projects = listOf(project) + it.projects) }
-                    preferences.saveProjects(_state.value.projects)
-                    openProject(project)
-                    _state.update {
-                        it.copy(toastMessage = "Project '$cleanName' uploaded ($count files extracted)")
-                    }
-                },
-                onFailure = { error ->
-                    val filesDir = getApplication<Application>().filesDir
-                    File(filesDir, "workspaces/${project.id}").deleteRecursively()
-                    _state.update {
-                        it.copy(toastMessage = "Upload failed: ${error.message ?: "Failed to extract ZIP"}")
-                    }
-                }
-            )
-        }
-    }
-
-    fun uploadZipToActiveProject(uri: Uri) {
-        val current = _state.value
-        val project = current.activeProject ?: return
-        if (current.isRunning || current.projectTerminalRunning) {
-            _state.update { it.copy(toastMessage = "Stop the running task before uploading files") }
-            return
-        }
-        val resolver = getApplication<Application>().contentResolver
-        viewModelScope.launch {
-            _state.update { it.copy(filesLoading = true) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val stream = resolver.openInputStream(uri) ?: error("Unable to open selected file")
-                    val extractedCount = stream.use { extractZipStream(it, root) }
-                    extractedCount
-                }
-            }
-            refreshProjectFiles()
-            _state.update {
-                it.copy(
-                    toastMessage = result.fold(
-                        onSuccess = { count -> "$count file(s) extracted into project" },
-                        onFailure = { error -> "Extract failed: ${error.message ?: "Invalid ZIP"}" }
-                    )
-                )
-            }
-        }
-    }
-
-    fun uploadFilesToActiveProject(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        val current = _state.value
-        val project = current.activeProject ?: return
-        if (current.isRunning || current.projectTerminalRunning) {
-            _state.update { it.copy(toastMessage = "Stop the running task before uploading files") }
-            return
-        }
-        val resolver = getApplication<Application>().contentResolver
-        viewModelScope.launch {
-            _state.update { it.copy(filesLoading = true) }
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project).canonicalFile
-                    var copiedCount = 0
-                    uris.forEach { uri ->
-                        val rawName = queryDisplayName(uri)
-                        val fileName = sanitizeAttachmentName(rawName)
-                        if (fileName.isNotBlank()) {
-                            val dest = File(root, fileName).canonicalFile
-                            if (dest.toPath().startsWith(root.toPath())) {
-                                resolver.openInputStream(uri)?.buffered()?.use { input ->
-                                    dest.outputStream().buffered().use { output ->
-                                        input.copyTo(output)
-                                    }
-                                }
-                                copiedCount++
-                            }
-                        }
-                    }
-                    copiedCount
-                }
-            }
-            refreshProjectFiles()
-            _state.update {
-                it.copy(
-                    toastMessage = result.fold(
-                        onSuccess = { count -> "$count file(s) added to project" },
-                        onFailure = { error -> "Upload failed: ${error.message ?: "Could not copy files"}" }
-                    )
-                )
-            }
-        }
-    }
-
-    private fun extractZipStream(
-        inputStream: InputStream,
-        targetDirectory: File,
-        maxTotalBytes: Long = 250_000_000L,
-    ): Int {
-        val targetCanonical = targetDirectory.canonicalFile
-        targetCanonical.mkdirs()
-        var fileCount = 0
-        var totalBytes = 0L
-
-        ZipInputStream(inputStream.buffered()).use { zipIn ->
-            var entry = zipIn.nextEntry
-            while (entry != null) {
-                val name = entry.name.replace('\\', '/')
-                if (!name.startsWith("__MACOSX/") && !name.contains("/__MACOSX/") && !name.endsWith(".DS_Store")) {
-                    val cleanPath = name.trimStart('/')
-                    if (cleanPath.isNotBlank()) {
-                        val destFile = File(targetCanonical, cleanPath).canonicalFile
-                        if (!destFile.toPath().startsWith(targetCanonical.toPath())) {
-                            throw SecurityException("Invalid ZIP entry path: ${entry.name}")
-                        }
-                        if (entry.isDirectory) {
-                            destFile.mkdirs()
-                        } else {
-                            destFile.parentFile?.mkdirs()
-                            destFile.outputStream().buffered().use { output ->
-                                val buffer = ByteArray(8192)
-                                var len: Int
-                                while (zipIn.read(buffer).also { len = it } > 0) {
-                                    totalBytes += len
-                                    if (totalBytes > maxTotalBytes) {
-                                        throw IllegalStateException("ZIP exceeds maximum allowed size (250 MB)")
-                                    }
-                                    output.write(buffer, 0, len)
-                                }
-                            }
-                            fileCount++
-                        }
-                    }
-                }
-                zipIn.closeEntry()
-                entry = zipIn.nextEntry
-            }
-        }
-        return fileCount
-    }
-
-    private fun queryDisplayName(uri: Uri): String {
-        var displayName: String? = null
-        runCatching {
-            getApplication<Application>().contentResolver.query(
-                uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME),
-                null,
-                null,
-                null,
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (index >= 0) displayName = cursor.getString(index)
-                }
-            }
-        }
-        return displayName ?: uri.lastPathSegment?.substringAfterLast('/') ?: "uploaded_project"
-    }
-
     fun createChat() {
         val project = _state.value.activeProject ?: return
         if (_state.value.isRunning) return
@@ -1728,396 +2776,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = _state.value.activeProject ?: return
         _state.update { it.copy(filesLoading = true) }
         viewModelScope.launch {
-            val scan = withContext(Dispatchers.IO) {
-                val root = projectWorkspaceRoot(project)
-                val allEntries = readWorkspace(project)
-                val apks = if (root.isDirectory) {
-                    val rootPath = root.canonicalFile.toPath()
-                    root.walkTopDown()
-                        .maxDepth(12)
-                        .filter { file ->
-                            file.isFile && (file.name.endsWith(".apk", ignoreCase = true) || file.name.endsWith(".aab", ignoreCase = true)) &&
-                                runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
-                        }
-                        .map { file ->
-                            val relative = file.relativeTo(root).invariantSeparatorsPath
-                            WorkspaceEntry(
-                                path = relative,
-                                name = file.name,
-                                isDirectory = false,
-                                depth = relative.count { it == '/' },
-                                sizeBytes = file.length(),
-                            )
-                        }
-                        .toList()
-                } else emptyList()
-
-                WorkspaceScanResult(
-                    entries = allEntries,
-                    apks = apks,
-                    suggestedRoot = if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
-                    androidDetected = findAndroidGradleProjectRoot(root) != null,
+            val (entries, suggestedRoot, androidProjectDetected) = withContext(Dispatchers.IO) {
+                Triple(
+                    readWorkspace(project),
+                    if (project.rootPath.isBlank()) detectNestedProjectRoot(project) else null,
+                    findAndroidGradleProjectRoot(projectWorkspaceRoot(project)) != null,
                 )
             }
             if (_state.value.activeProject?.id == project.id) {
                 _state.update {
                     it.copy(
-                        workspaceFiles = scan.entries,
-                        detectedApkOutputs = scan.apks,
+                        workspaceFiles = entries,
                         filesLoading = false,
-                        suggestedProjectRoot = scan.suggestedRoot,
-                        androidProjectDetected = scan.androidDetected,
+                        suggestedProjectRoot = suggestedRoot,
+                        androidProjectDetected = androidProjectDetected,
                     )
                 }
             }
-        }
-    }
-
-    fun toggleWorkspaceFileSelection(path: String) {
-        _state.update { current ->
-            val set = current.selectedWorkspacePaths
-            val updated = if (path in set) set - path else set + path
-            current.copy(selectedWorkspacePaths = updated)
-        }
-    }
-
-    fun selectAllWorkspaceFiles(paths: List<String>) {
-        _state.update { it.copy(selectedWorkspacePaths = paths.toSet()) }
-    }
-
-    fun clearWorkspaceFileSelection() {
-        _state.update { it.copy(selectedWorkspacePaths = emptySet()) }
-    }
-
-    fun copySelectedWorkspaceFiles(paths: List<String>) {
-        if (paths.isEmpty()) return
-        _state.update {
-            it.copy(
-                workspaceClipboard = WorkspaceClipboard(sourcePaths = paths, isCut = false),
-                toastMessage = if (paths.size == 1) "Copied 1 item to clipboard" else "Copied ${paths.size} items to clipboard",
-            )
-        }
-    }
-
-    fun cutSelectedWorkspaceFiles(paths: List<String>) {
-        if (paths.isEmpty()) return
-        _state.update {
-            it.copy(
-                workspaceClipboard = WorkspaceClipboard(sourcePaths = paths, isCut = true),
-                toastMessage = if (paths.size == 1) "Cut 1 item to clipboard" else "Cut ${paths.size} items to clipboard",
-            )
-        }
-    }
-
-    fun clearWorkspaceClipboard() {
-        _state.update { it.copy(workspaceClipboard = null) }
-    }
-
-    fun pasteWorkspaceFiles(targetDirectoryRelativePath: String) {
-        val project = _state.value.activeProject ?: return
-        val clipboard = _state.value.workspaceClipboard ?: return
-        if (clipboard.sourcePaths.isEmpty()) return
-
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val rootPath = root.canonicalFile.toPath()
-                    val targetDir = if (targetDirectoryRelativePath.isBlank()) root else File(root, targetDirectoryRelativePath)
-                    if (!targetDir.exists()) targetDir.mkdirs()
-                    if (!runCatching { targetDir.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)) {
-                        error("Invalid destination")
-                    }
-
-                    var count = 0
-                    clipboard.sourcePaths.forEach { sourceRel ->
-                        val src = File(root, sourceRel)
-                        if (src.exists() && runCatching { src.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) && src != root) {
-                            val dest = File(targetDir, src.name)
-                            if (src.canonicalPath != dest.canonicalPath) {
-                                if (src.isDirectory) {
-                                    src.copyRecursively(dest, overwrite = true)
-                                } else {
-                                    src.copyTo(dest, overwrite = true)
-                                }
-                                if (clipboard.isCut) {
-                                    src.deleteRecursively()
-                                }
-                                count++
-                            }
-                        }
-                    }
-                    count
-                }
-            }
-            _state.update {
-                it.copy(
-                    workspaceClipboard = if (clipboard.isCut) null else clipboard,
-                    selectedWorkspacePaths = emptySet(),
-                    toastMessage = result.fold(
-                        onSuccess = { count -> if (clipboard.isCut) "Moved $count item(s)" else "Pasted $count item(s)" },
-                        onFailure = { error -> "Paste failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
-        }
-    }
-
-    fun deleteWorkspaceEntries(relativePaths: List<String>) {
-        val project = _state.value.activeProject ?: return
-        if (relativePaths.isEmpty()) return
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val rootPath = root.canonicalFile.toPath()
-                    var deletedCount = 0
-                    relativePaths.forEach { rel ->
-                        val target = File(root, rel)
-                        if (target.exists() && runCatching { target.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) && target != root) {
-                            if (target.deleteRecursively()) {
-                                deletedCount++
-                            }
-                        }
-                    }
-                    deletedCount
-                }
-            }
-            _state.update {
-                it.copy(
-                    selectedWorkspacePaths = emptySet(),
-                    toastMessage = result.fold(
-                        onSuccess = { count -> if (count == 1) "Item deleted" else "$count items deleted" },
-                        onFailure = { error -> "Delete failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
-        }
-    }
-
-    fun renameWorkspaceEntry(oldRelativePath: String, newName: String) {
-        val project = _state.value.activeProject ?: return
-        val cleanName = newName.trim()
-        if (cleanName.isBlank() || cleanName.contains('/') || cleanName.contains('\\')) {
-            _state.update { it.copy(toastMessage = "Invalid name") }
-            return
-        }
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val rootPath = root.canonicalFile.toPath()
-                    val target = File(root, oldRelativePath)
-                    if (!target.exists() || !runCatching { target.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) || target == root) {
-                        error("Item not found")
-                    }
-                    val destination = File(target.parentFile ?: root, cleanName)
-                    if (destination.exists()) error("An item named '$cleanName' already exists")
-                    if (!target.renameTo(destination)) error("Failed to rename item")
-                    destination
-                }
-            }
-            _state.update {
-                it.copy(
-                    selectedWorkspacePaths = emptySet(),
-                    toastMessage = result.fold(
-                        onSuccess = { "Renamed to $cleanName" },
-                        onFailure = { error -> "Rename failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
-        }
-    }
-
-    fun moveWorkspaceEntries(sourceRelativePaths: List<String>, targetDirectoryRelativePath: String) {
-        val project = _state.value.activeProject ?: return
-        if (sourceRelativePaths.isEmpty()) return
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val rootPath = root.canonicalFile.toPath()
-                    val targetDir = if (targetDirectoryRelativePath.isBlank()) root else File(root, targetDirectoryRelativePath)
-                    if (!targetDir.exists()) targetDir.mkdirs()
-                    if (!runCatching { targetDir.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)) {
-                        error("Invalid destination")
-                    }
-                    var count = 0
-                    sourceRelativePaths.forEach { sourceRel ->
-                        val src = File(root, sourceRel)
-                        if (src.exists() && runCatching { src.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false) && src != root) {
-                            val dest = File(targetDir, src.name)
-                            if (src.canonicalPath != dest.canonicalPath) {
-                                if (src.isDirectory) {
-                                    src.copyRecursively(dest, overwrite = true)
-                                    src.deleteRecursively()
-                                } else {
-                                    src.copyTo(dest, overwrite = true)
-                                    src.delete()
-                                }
-                                count++
-                            }
-                        }
-                    }
-                    count
-                }
-            }
-            _state.update {
-                it.copy(
-                    selectedWorkspacePaths = emptySet(),
-                    toastMessage = result.fold(
-                        onSuccess = { count -> "Moved $count item(s)" },
-                        onFailure = { error -> "Move failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
-        }
-    }
-
-    fun createWorkspaceFile(directoryRelativePath: String, fileName: String) {
-        val project = _state.value.activeProject ?: return
-        val cleanName = fileName.trim()
-        if (cleanName.isBlank() || cleanName.contains('/') || cleanName.contains('\\')) {
-            _state.update { it.copy(toastMessage = "Invalid file name") }
-            return
-        }
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val targetDir = if (directoryRelativePath.isBlank()) root else File(root, directoryRelativePath)
-                    if (!targetDir.exists()) targetDir.mkdirs()
-                    val newFile = File(targetDir, cleanName)
-                    if (newFile.exists()) error("File already exists")
-                    if (!newFile.createNewFile()) error("Failed to create file")
-                    newFile
-                }
-            }
-            _state.update {
-                it.copy(
-                    toastMessage = result.fold(
-                        onSuccess = { "Created $cleanName" },
-                        onFailure = { error -> "Creation failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
-        }
-    }
-
-    fun createWorkspaceFolder(directoryRelativePath: String, folderName: String) {
-        val project = _state.value.activeProject ?: return
-        val cleanName = folderName.trim()
-        if (cleanName.isBlank() || cleanName.contains('/') || cleanName.contains('\\')) {
-            _state.update { it.copy(toastMessage = "Invalid folder name") }
-            return
-        }
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val targetDir = if (directoryRelativePath.isBlank()) root else File(root, directoryRelativePath)
-                    val newFolder = File(targetDir, cleanName)
-                    if (newFolder.exists()) error("Folder already exists")
-                    if (!newFolder.mkdirs() && !newFolder.exists()) error("Failed to create folder")
-                    newFolder
-                }
-            }
-            _state.update {
-                it.copy(
-                    toastMessage = result.fold(
-                        onSuccess = { "Created folder $cleanName" },
-                        onFailure = { error -> "Creation failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
-        }
-    }
-
-    fun exportWorkspaceFile(relativePath: String, destinationUri: Uri) {
-        val project = _state.value.activeProject ?: return
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val targetFile = File(root, relativePath)
-                    if (!targetFile.exists() || !targetFile.isFile) error("File not found: $relativePath")
-                    val output = getApplication<Application>().contentResolver.openOutputStream(destinationUri)
-                        ?: error("Unable to open destination")
-                    output.use { out ->
-                        targetFile.inputStream().use { input ->
-                            input.copyTo(out)
-                        }
-                    }
-                }
-            }
-            _state.update {
-                it.copy(
-                    toastMessage = result.fold(
-                        onSuccess = { "Saved ${relativePath.substringAfterLast('/')} successfully" },
-                        onFailure = { error -> "Save failed: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-        }
-    }
-
-    fun getWorkspaceFile(relativePath: String): File? {
-        val project = _state.value.activeProject ?: return null
-        val root = projectWorkspaceRoot(project)
-        val file = File(root, relativePath)
-        return if (file.exists()) file else null
-    }
-
-    fun syncApksToOutputFolder() {
-        val project = _state.value.activeProject ?: return
-        viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val root = projectWorkspaceRoot(project)
-                    val rootPath = root.canonicalFile.toPath()
-                    val outputDir = File(root, "output")
-                    if (!outputDir.exists()) outputDir.mkdirs()
-
-                    val apkFiles = root.walkTopDown()
-                        .maxDepth(12)
-                        .filter { file ->
-                            file.isFile &&
-                                (file.name.endsWith(".apk", ignoreCase = true) || file.name.endsWith(".aab", ignoreCase = true)) &&
-                                !file.parentFile?.canonicalPath.equals(outputDir.canonicalPath) &&
-                                runCatching { file.canonicalFile.toPath().startsWith(rootPath) }.getOrDefault(false)
-                        }
-                        .toList()
-
-                    if (apkFiles.isEmpty()) {
-                        0
-                    } else {
-                        var copied = 0
-                        apkFiles.forEach { src ->
-                            val dest = File(outputDir, src.name)
-                            src.copyTo(dest, overwrite = true)
-                            copied++
-                        }
-                        copied
-                    }
-                }
-            }
-            _state.update {
-                it.copy(
-                    toastMessage = result.fold(
-                        onSuccess = { count ->
-                            if (count == 0) "No new APK files to copy (or already in /output)" else "Saved $count APK(s) to /output folder"
-                        },
-                        onFailure = { error -> "Error copying APKs: ${error.message ?: "Unknown error"}" },
-                    ),
-                )
-            }
-            refreshProjectFiles()
         }
     }
 
@@ -2191,16 +2866,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun isExportExcludedPath(relativePath: String): Boolean {
-        if (relativePath.endsWith(".apk", ignoreCase = true) ||
-            relativePath.endsWith(".aab", ignoreCase = true) ||
-            relativePath.startsWith("output/") ||
-            relativePath == "output"
-        ) {
-            return false
-        }
         val excludedNames = setOf(
             ".git", ".claude", ".gradle", ".idea", ".next", ".cache",
-            "node_modules", ".venv", "venv", "__pycache__",
+            "node_modules", ".venv", "venv", "__pycache__", "build",
         )
         return relativePath.split('/').any { it in excludedNames } || isClaudeRuntimeMetadata(relativePath)
     }
@@ -2332,6 +3000,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendPrompt(prompt: String) {
         val project = state.value.activeProject ?: return
+        if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
+            _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
+            _state.update { it.copy(toastMessage = "Sign in to Antigravity from Settings before starting a task.") }
+            return
+        }
+        if (_state.value.agentKind == AgentKind.DEEPSEEK_HARNESS && _state.value.provider.kind == ProviderKind.CLAUDE) {
+            _state.update { it.copy(toastMessage = "Claude subscription login is not supported by DeepSeek Harness — pick a key-based provider in Settings.") }
+            return
+        }
         val attachments = state.value.pendingAttachments
         if ((prompt.isBlank() && attachments.isEmpty()) || state.value.isRunning) return
         val requestText = prompt.trim().ifBlank { "Please review the attached files." }
@@ -2343,7 +3020,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 pendingAttachments = emptyList(),
                 isRunning = true,
                 activity = listOf(ActivityItem("Understanding your request", "Preparing a safe plan", false)) + it.activity,
-                liveProcess = listOf(ActivityItem("Think", requestPlanningSummary(requestText), false)),
+                liveProcess = listOf(ActivityItem("Think", requestPlanningSummary(requestText, it.agentKind), false)),
                 liveThinking = true,
                 activeThinkingBlockId = null,
                 taskStartedAtMillis = startedAt,
@@ -2365,25 +3042,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("These files were explicitly attached by the user. Inspect them only as needed for the request.")
             appendLine("</attached_files>")
         }
+        failedApiKeyIds.clear()
+        activeRuntimeRequest = RuntimeRetryRequest(
+            runtime = activeRuntime(),
+            project = project,
+            prompt = runtimePrompt,
+            history = history,
+            provider = state.value.provider,
+        )
         viewModelScope.launch {
-            runtime.startSession(project.id, project.slug, project.kind, runtimePrompt, history, state.value.provider)
+            activeRuntimeRequest?.let { request ->
+                request.runtime.startSession(
+                    request.project.id,
+                    request.project.slug,
+                    request.project.kind,
+                    request.prompt,
+                    request.history,
+                    request.provider,
+                )
+            }
         }
     }
 
     fun answerApproval(approved: Boolean) {
         val request = state.value.pendingApproval ?: return
-        viewModelScope.launch { runtime.respondToApproval(request, approved) }
+        viewModelScope.launch { activeRuntime().respondToApproval(request, approved) }
     }
 
     fun stopTask() {
         if (!_state.value.isRunning) return
-        viewModelScope.launch { runtime.stopActiveSession() }
+        viewModelScope.launch { activeRuntime().stopActiveSession() }
     }
 
     fun undoLastChanges() {
         val project = _state.value.activeProject ?: return
         viewModelScope.launch {
-            val restored = runtime.undoLastChanges(project.id)
+            val restored = activeRuntime().undoLastChanges(project.id)
             _state.update { current ->
                 current.copy(
                     changes = if (restored) emptyList() else current.changes,
@@ -2402,7 +3096,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun keepLastChanges() {
         val project = _state.value.activeProject ?: return
         viewModelScope.launch {
-            runtime.acceptLastChanges(project.id)
+            activeRuntime().acceptLastChanges(project.id)
             _state.update {
                 it.copy(
                     changes = emptyList(),
@@ -2415,7 +3109,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun undoFileChange(path: String) {
         val project = _state.value.activeProject ?: return
         viewModelScope.launch {
-            if (runtime.undoFileChange(project.id, path)) {
+            if (activeRuntime().undoFileChange(project.id, path)) {
                 _state.update { current -> current.copy(changes = current.changes.filterNot { it.path == path }) }
                 refreshProjectFiles()
             }
@@ -2425,7 +3119,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun keepFileChange(path: String) {
         val project = _state.value.activeProject ?: return
         viewModelScope.launch {
-            if (runtime.acceptFileChange(project.id, path)) {
+            if (activeRuntime().acceptFileChange(project.id, path)) {
                 _state.update { current -> current.copy(changes = current.changes.filterNot { it.path == path }) }
             }
         }
@@ -2461,15 +3155,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun requestPlanningSummary(request: String, toolName: String? = null, detail: String = ""): String {
+    private fun requestPlanningSummary(
+        request: String,
+        agentKind: AgentKind,
+        toolName: String? = null,
+        detail: String = "",
+    ): String {
+        val agentName = agentKind.title
         val cleanRequest = request.replace(Regex("\\s+"), " ").trim().take(110)
         val requestPart = if (cleanRequest.isBlank()) {
-            "Claude is reviewing the request"
+            "$agentName is reviewing the request"
         } else {
             "The user is asking: “$cleanRequest”"
         }
         return if (toolName == null) {
-            "$requestPart. Claude is deciding the next useful step."
+            "$requestPart. $agentName is deciding the next useful step."
         } else {
             "$requestPart. ${toolPlanSummary(toolName, detail)}."
         }
@@ -2497,6 +3197,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    /** Adds the complete request duration to the response produced after the latest user message. */
+    private fun attachTaskDuration(current: AppUiState, finishedAt: Long): AppUiState {
+        val startedAt = current.taskStartedAtMillis ?: return current
+        val lastUserIndex = current.messages.indexOfLast { it.fromUser }
+        val responseIndex = current.messages.indices.lastOrNull { index ->
+            index > lastUserIndex && !current.messages[index].fromUser && current.messages[index].text.isNotBlank()
+        } ?: return current
+        val updated = current.messages.toMutableList()
+        updated[responseIndex] = updated[responseIndex].copy(
+            workedMillis = (finishedAt - startedAt).coerceAtLeast(1L),
+        )
+        return current.copy(messages = updated)
+    }
+
     private fun appendWorkItem(current: AppUiState, item: ActivityItem): AppUiState {
         if (isNoisyRuntimeItem(item)) return current
         return current.copy(
@@ -2507,6 +3221,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onRuntimeEvent(event: RuntimeEvent) {
+        if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.ANTIGRAVITY &&
+            (event.reason.contains("sign-in", true) || event.reason.contains("authentication", true))) {
+            antigravityAuthController.invalidateSession(event.reason)
+        }
+        if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
             if (!current.isRunning) {
                 current
@@ -2539,7 +3258,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val reasoning = ActivityItem(
                         title = "Think",
                         detail = current.liveProcess.getOrNull(existingIndex)?.detail
-                            ?: requestPlanningSummary(current.currentTaskRequest.orEmpty()),
+                            ?: requestPlanningSummary(current.currentTaskRequest.orEmpty(), current.agentKind),
                         isComplete = false,
                     )
                     val process = if (existingIndex >= 0) {
@@ -2660,38 +3379,93 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     liveThinking = false,
                     workSegmentStartedAtMillis = current.workSegmentStartedAtMillis ?: System.currentTimeMillis(),
                 )
-                is RuntimeEvent.SessionCompleted -> finishWorkSegment(current).copy(
-                    isRunning = false,
-                    activeSessionId = null,
-                    activity = listOf(ActivityItem("Task completed", "Claude Code finished successfully")) +
-                        current.activity.map { if (!it.isComplete) it.copy(isComplete = true) else it },
-                    taskFinishedAtMillis = System.currentTimeMillis(),
-                    currentTaskRequest = null,
-                )
-                is RuntimeEvent.SessionFailed -> finishWorkSegment(
-                    appendWorkItem(current, ActivityItem("Task stopped", event.reason)),
-                ).copy(
-                    isRunning = false,
-                    activeSessionId = null,
-                    pendingApproval = null,
-                    toastMessage = event.reason.takeIf { reason ->
-                        reason.contains("user not found", true) ||
-                            reason.contains("API key", true) ||
-                            reason.contains("authentication", true)
-                    },
-                    activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
-                    taskFinishedAtMillis = System.currentTimeMillis(),
-                    currentTaskRequest = null,
-                )
+                is RuntimeEvent.SessionCompleted -> {
+                    val finishedAt = System.currentTimeMillis()
+                    attachTaskDuration(finishWorkSegment(current, finishedAt), finishedAt).copy(
+                        isRunning = false,
+                        activeSessionId = null,
+                        activity = listOf(ActivityItem("Task completed", "${current.agentKind.title} finished successfully")) +
+                            current.activity.map { if (!it.isComplete) it.copy(isComplete = true) else it },
+                        taskFinishedAtMillis = finishedAt,
+                        currentTaskRequest = null,
+                    )
+                }
+                is RuntimeEvent.SessionFailed -> {
+                    val finishedAt = System.currentTimeMillis()
+                    attachTaskDuration(
+                        finishWorkSegment(
+                            appendWorkItem(current, ActivityItem("Task stopped", event.reason)),
+                            finishedAt,
+                        ),
+                        finishedAt,
+                    ).copy(
+                        isRunning = false,
+                        activeSessionId = null,
+                        pendingApproval = null,
+                        toastMessage = event.reason.takeIf { reason ->
+                            reason.contains("user not found", true) ||
+                                reason.contains("API key", true) ||
+                                reason.contains("authentication", true)
+                        },
+                        activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
+                        taskFinishedAtMillis = finishedAt,
+                        currentTaskRequest = null,
+                    )
+                }
             }
+        }
+        if (event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
+            activeRuntimeRequest = null
+            failedApiKeyIds.clear()
         }
         if (event is RuntimeEvent.FilesChanged || event is RuntimeEvent.SessionCompleted) {
             _state.value.activeProject?.id?.let { touchProject(it) }
             refreshProjectFiles()
         }
-        if (event is RuntimeEvent.AssistantDelta || event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
-            persistMessages()
+        // Save every visible reasoning/tool transition, not only assistant text and
+        // final results. If Android kills the process, the last displayed timeline
+        // is restored as an interrupted work block rather than disappearing.
+        persistMessages(includeLiveProcess = true)
+    }
+
+    private fun retryWithNextApiKey(event: RuntimeEvent.SessionFailed): Boolean {
+        val current = _state.value
+        if (current.agentKind == AgentKind.ANTIGRAVITY) return false
+        if (!current.isRunning || current.activeSessionId != event.sessionId) return false
+        if (!isApiKeyFailure(event.reason)) return false
+        val request = activeRuntimeRequest ?: return false
+        val credentials = vault.credentials(request.provider.kind.name)
+        val active = credentials.firstOrNull { it.isActive } ?: return false
+        failedApiKeyIds += active.id
+        val next = credentials.firstOrNull { it.id !in failedApiKeyIds } ?: return false
+        if (!vault.activate(request.provider.kind.name, next.id)) return false
+        _state.update {
+            it.copy(
+                activeSessionId = null,
+                activeApiKeyName = next.name,
+                toastMessage = "${active.name} failed. Switched to ${next.name}.",
+                liveProcess = it.liveProcess + ActivityItem("API key switched", "Using ${next.name}", true),
+            )
         }
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(300)
+            request.runtime.startSession(
+                request.project.id,
+                request.project.slug,
+                request.project.kind,
+                request.prompt,
+                request.history,
+                request.provider,
+            )
+        }
+        return true
+    }
+
+    private fun isApiKeyFailure(reason: String): Boolean {
+        val value = reason.lowercase()
+        return "api key" in value || "authentication" in value || "user not found" in value ||
+            "http 401" in value || "http 403" in value || "http 429" in value ||
+            "expired" in value || "quota" in value || "rate limit" in value
     }
 
     private fun touchProject(projectId: String) {
@@ -2706,13 +3480,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.saveProjects(_state.value.projects)
     }
 
-    private fun persistMessages() {
-        val project = _state.value.activeProject ?: return
-        val chatId = _state.value.activeChatId ?: return
-        val msgs = _state.value.messages
-        viewModelScope.launch(Dispatchers.IO) {
-            preferences.saveMessages(project.id, chatId, msgs)
+    private fun persistMessages(includeLiveProcess: Boolean = true) {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        val chatId = current.activeChatId ?: return
+        val liveItems = if (includeLiveProcess) current.liveProcess.filterNot(::isNoisyRuntimeItem) else emptyList()
+        val messages = if (liveItems.isEmpty() && !current.liveThinking) {
+            current.messages
+        } else {
+            val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: System.currentTimeMillis()
+            current.messages + ChatMessage(
+                id = "interrupted-${current.activeSessionId ?: chatId}",
+                fromUser = false,
+                text = "",
+                workItems = liveItems.map { it.copy(isComplete = true) } + ActivityItem(
+                    "Task interrupted",
+                    "The agent process stopped before reporting completion. Continue this chat to resume its official session.",
+                ),
+                workedMillis = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
+            )
         }
+        transcriptWrites.trySend(TranscriptWrite(project.id, chatId, messages))
     }
 
     private fun updateActiveChatTitle(prompt: String) {
@@ -2743,6 +3531,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
         private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
+        private const val MAX_IMPORTED_PROJECT_BYTES = 8L * 1024L * 1024L * 1024L
+        private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
+        private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"
+        private const val GITHUB_DEVICE_URL = "https://github.com/login/device"
+        private val GITHUB_DEVICE_CODE = Regex("\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b")
         private const val TEST_PROVIDER_DEFAULTS_VERSION = 1
         private const val TEST_OPENROUTER_BASE_URL = "https://openrouter.ai/api"
         private const val TEST_OPENROUTER_MODEL = "stealth/ox-alpha"

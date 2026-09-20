@@ -1,6 +1,7 @@
 package com.pocketforge.mobile.data
 
 import android.content.Context
+import com.pocketforge.mobile.model.AgentKind
 import com.pocketforge.mobile.model.ChatMessage
 import com.pocketforge.mobile.model.ChatAttachment
 import com.pocketforge.mobile.model.Project
@@ -8,7 +9,9 @@ import com.pocketforge.mobile.model.ProjectKind
 import com.pocketforge.mobile.model.ProjectChat
 import com.pocketforge.mobile.model.ProviderKind
 import com.pocketforge.mobile.model.ProviderProfile
+import com.pocketforge.mobile.model.defaultDshApiForProvider
 import com.pocketforge.mobile.model.projectSlug
+import com.pocketforge.mobile.model.providersForAgent
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -28,6 +31,68 @@ class AppPreferences(private val context: Context) {
     var backgroundSetupComplete: Boolean
         get() = preferences.getBoolean("background_setup_complete", false)
         set(value) { preferences.edit().putBoolean("background_setup_complete", value).apply() }
+
+    /** Coding agent engine the user picked during setup. Absent = pre-agent-choice install → Claude. */
+    var agentKind: String
+        get() = preferences.getString("agent_kind", AgentKind.CLAUDE_CODE.stableId) ?: AgentKind.CLAUDE_CODE.stableId
+        set(value) { preferences.edit().putString("agent_kind", value).apply() }
+
+    /** Agent chosen for the initial runtime installation; used as the leading UI tab. */
+    var primaryAgentKind: String
+        get() = preferences.getString("primary_agent_kind", "") ?: ""
+        set(value) { preferences.edit().putString("primary_agent_kind", value).apply() }
+
+    var antigravityModel: String
+        get() = preferences.getString("agent_antigravity_model", "") ?: ""
+        set(value) { preferences.edit().putString("agent_antigravity_model", value).apply() }
+
+    var antigravityEffort: String
+        get() = preferences.getString("agent_antigravity_effort", "high") ?: "high"
+        set(value) { preferences.edit().putString("agent_antigravity_effort", value).apply() }
+
+    var antigravitySignedIn: Boolean
+        get() = preferences.getBoolean("agent_antigravity_signed_in", false)
+        set(value) { preferences.edit().putBoolean("agent_antigravity_signed_in", value).apply() }
+
+    var antigravityAccountEmail: String
+        get() = preferences.getString("agent_antigravity_account_email", "") ?: ""
+        set(value) { preferences.edit().putString("agent_antigravity_account_email", value).apply() }
+
+    var githubLogin: String
+        get() = preferences.getString("github_login", "") ?: ""
+        set(value) { preferences.edit().putString("github_login", value).apply() }
+
+    fun saveAgentConversation(agent: AgentKind, projectId: String, chatId: String, conversationId: String?) {
+        val key = agentConversationKey(agent, projectId, chatId)
+        preferences.edit().apply {
+            if (conversationId.isNullOrBlank()) remove(key) else putString(key, conversationId)
+        }.commit()
+    }
+
+    fun loadAgentConversation(agent: AgentKind, projectId: String, chatId: String): String? =
+        preferences.getString(agentConversationKey(agent, projectId, chatId), null)
+
+    fun clearAgentConversations(agent: AgentKind) {
+        val stable = agent.stableId
+        val keys = preferences.all.keys.filter { key ->
+            key.startsWith("agent_conversation_${stable}_") ||
+                key.startsWith("agent_conversation_v2_${stable}_")
+        }
+        if (keys.isEmpty()) return
+        preferences.edit().apply { keys.forEach(::remove) }.apply()
+    }
+
+    private fun agentConversationKey(agent: AgentKind, projectId: String, chatId: String): String {
+        // Antigravity v2 sessions are created with an explicit CLI project so
+        // old default-project conversations cannot redirect writes to scratch.
+        val version = if (agent == AgentKind.ANTIGRAVITY) "v2_" else ""
+        return "agent_conversation_${version}${agent.stableId}_${projectId}_$chatId"
+    }
+
+    /** Pinned dsh version recorded when DeepSeek Harness was installed. */
+    var dshVersion: String
+        get() = preferences.getString("dsh_version", "") ?: ""
+        set(value) { preferences.edit().putString("dsh_version", value).apply() }
 
     var themeMode: String
         get() = preferences.getString("theme_mode", "dark") ?: "dark"
@@ -70,24 +135,88 @@ class AppPreferences(private val context: Context) {
         }
 
 
-    fun saveProvider(profile: ProviderProfile) {
-        preferences.edit()
+    fun saveProvider(profile: ProviderProfile, agent: AgentKind? = null) {
+        val editor = preferences.edit()
             .putString("provider_kind", profile.kind.name)
             .putString("provider_base_url", profile.baseUrl)
             .putString("provider_model", profile.model)
-            .apply()
+            .putString("provider_dsh_api", profile.dshApi)
+        if (agent != null) {
+            val prefix = providerPrefix(agent)
+            editor
+                .putString("${prefix}kind", profile.kind.name)
+                .putString("${prefix}base_url", profile.baseUrl)
+                .putString("${prefix}model", profile.model)
+                .putString("${prefix}dsh_api", profile.dshApi)
+        }
+        editor.apply()
     }
 
-    fun loadProvider(vault: ApiKeyVault): ProviderProfile {
-        val kind = runCatching { ProviderKind.valueOf(preferences.getString("provider_kind", null).orEmpty()) }
-            .getOrDefault(ProviderKind.ANTHROPIC)
+    fun loadProvider(vault: ApiKeyVault, agent: AgentKind? = null): ProviderProfile {
+        val prefix = agent?.let(::providerPrefix)
+        val hasAgentProfile = prefix != null && preferences.contains("${prefix}kind")
+        val sourcePrefix = if (hasAgentProfile) prefix.orEmpty() else "provider_"
+        val storedKind = runCatching {
+            ProviderKind.valueOf(preferences.getString("${sourcePrefix}kind", null).orEmpty())
+        }.getOrNull()
+        val storedBaseUrl = storedKind?.let {
+            preferences.getString("${sourcePrefix}base_url", it.defaultBaseUrl) ?: it.defaultBaseUrl
+        }.orEmpty()
+        val storedModel = storedKind?.let {
+            preferences.getString("${sourcePrefix}model", it.defaultModel) ?: it.defaultModel
+        }.orEmpty()
+        // Older builds copied the global Claude/Anthropic default into a new
+        // DeepSeek Harness profile. Treat that untouched, keyless placeholder
+        // as unconfigured so DeepSeek opens on its own official provider.
+        val legacyClaudeDefaultInDeepSeek = agent == AgentKind.DEEPSEEK_HARNESS &&
+            storedKind == ProviderKind.ANTHROPIC &&
+            !vault.contains(ProviderKind.ANTHROPIC.name) &&
+            storedBaseUrl == ProviderKind.ANTHROPIC.defaultBaseUrl &&
+            storedModel == ProviderKind.ANTHROPIC.defaultModel
+        val kind = when {
+            agent == null -> storedKind ?: ProviderKind.ANTHROPIC
+            agent == AgentKind.DEEPSEEK_HARNESS && (!hasAgentProfile || legacyClaudeDefaultInDeepSeek) -> ProviderKind.DEEPSEEK
+            storedKind != null && storedKind in providersForAgent(agent) -> storedKind
+            agent == AgentKind.DEEPSEEK_HARNESS -> ProviderKind.DEEPSEEK
+            else -> ProviderKind.ANTHROPIC
+        }
+        val useStoredValues = storedKind == kind
+        val savedModel = if (useStoredValues) {
+            preferences.getString("${sourcePrefix}model", kind.defaultModel) ?: kind.defaultModel
+        } else {
+            kind.defaultModel
+        }
+        // DeepSeek retired its legacy alias. Migrate only DeepSeek profiles so
+        // custom and gateway providers keep their independently selected model.
+        val model = if (
+            kind == ProviderKind.DEEPSEEK &&
+            savedModel in setOf("deepseek-chat", "deepseek-reasoner")
+        ) {
+            kind.defaultModel.also {
+                preferences.edit().putString("${sourcePrefix}model", it).apply()
+            }
+        } else {
+            savedModel
+        }
         return ProviderProfile(
             kind = kind,
-            baseUrl = preferences.getString("provider_base_url", kind.defaultBaseUrl) ?: kind.defaultBaseUrl,
-            model = preferences.getString("provider_model", kind.defaultModel) ?: kind.defaultModel,
+            baseUrl = if (useStoredValues) {
+                preferences.getString("${sourcePrefix}base_url", kind.defaultBaseUrl) ?: kind.defaultBaseUrl
+            } else {
+                kind.defaultBaseUrl
+            },
+            model = model,
             hasSecret = vault.contains(kind.name),
+            dshApi = if (useStoredValues) {
+                preferences.getString("${sourcePrefix}dsh_api", defaultDshApiForProvider(kind))
+                    ?: defaultDshApiForProvider(kind)
+            } else {
+                defaultDshApiForProvider(kind)
+            },
         )
     }
+
+    private fun providerPrefix(agent: AgentKind): String = "provider_${agent.stableId.replace('-', '_')}_"
 
     fun saveProjects(projects: List<Project>) {
         val arr = JSONArray()
@@ -210,6 +339,7 @@ class AppPreferences(private val context: Context) {
         return listOf(chat)
     }
 
+    @Synchronized
     fun saveMessages(projectId: String, chatId: String, messages: List<ChatMessage>) {
         val arr = JSONArray()
         messages.forEach { m ->
@@ -243,7 +373,13 @@ class AppPreferences(private val context: Context) {
             })
         }
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
-        File(projectDir, "$chatId.json").writeText(arr.toString())
+        val destination = File(projectDir, "$chatId.json")
+        val temporary = File(projectDir, ".$chatId.json.tmp")
+        temporary.writeText(arr.toString())
+        if (!temporary.renameTo(destination)) {
+            temporary.copyTo(destination, overwrite = true)
+            temporary.delete()
+        }
     }
 
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {

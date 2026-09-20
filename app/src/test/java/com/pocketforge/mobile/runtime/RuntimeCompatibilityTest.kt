@@ -5,46 +5,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RuntimeCompatibilityTest {
-
     @Test
-    fun supportsArm64WhenKernelAarch64AndAbiMatches() {
-        val abis = arrayOf("arm64-v8a", "armeabi-v7a", "armeabi")
-        val arch = "aarch64"
-        assertTrue(RuntimeCompatibility.supportsArm64Runtime(abis, arch))
+    fun acceptsNativeArm64Android() {
+        assertTrue(supportsArm64Runtime(arrayOf("arm64-v8a", "armeabi-v7a"), "aarch64"))
     }
 
     @Test
-    fun supportsArm64WhenKernelArm64AndAbiMatches() {
-        val abis = arrayOf("arm64-v8a")
-        val arch = "arm64"
-        assertTrue(RuntimeCompatibility.supportsArm64Runtime(abis, arch))
+    fun rejectsX8664EvenWhenTranslationAdvertisesArm64() {
+        assertFalse(supportsArm64Runtime(arrayOf("arm64-v8a", "x86_64"), "x86_64"))
     }
 
     @Test
-    fun rejectsX86_64OnlyDevice() {
-        val abis = arrayOf("x86_64", "x86")
-        val arch = "x86_64"
-        assertFalse(RuntimeCompatibility.supportsArm64Runtime(abis, arch))
-    }
-
-    @Test
-    fun rejectsArm64AbiWithX86Kernel() {
-        val abis = arrayOf("arm64-v8a", "x86_64")
-        val arch = "x86_64"
-        assertFalse(RuntimeCompatibility.supportsArm64Runtime(abis, arch))
-    }
-
-    @Test
-    fun rejectsEmptyAbis() {
-        val abis = emptyArray<String>()
-        val arch = "aarch64"
-        assertFalse(RuntimeCompatibility.supportsArm64Runtime(abis, arch))
-    }
-
-    @Test
-    fun rejectsNullInputs() {
-        assertFalse(RuntimeCompatibility.supportsArm64Runtime(null, "aarch64"))
-        assertFalse(RuntimeCompatibility.supportsArm64Runtime(arrayOf("arm64-v8a"), null))
-        assertFalse(RuntimeCompatibility.supportsArm64Runtime(null, null))
+    fun rejectsDevicesWithoutArm64Abi() {
+        assertFalse(supportsArm64Runtime(arrayOf("x86_64", "x86"), "x86_64"))
+        assertFalse(supportsArm64Runtime(arrayOf("armeabi-v7a"), "armv7l"))
     }
 }

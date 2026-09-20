@@ -257,10 +257,13 @@ class RuntimeSetupService : Service() {
             val stacks = intent?.getStringExtra(EXTRA_STACKS).orEmpty().split(',')
                 .mapNotNull { name -> runCatching { DevStack.valueOf(name) }.getOrNull() }
                 .toSet()
+            val agent = runCatching {
+                com.pocketforge.mobile.model.AgentKind.valueOf(intent?.getStringExtra(EXTRA_AGENT).orEmpty())
+            }.getOrDefault(com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE)
             RuntimeSetupController.begin(this)
             installJob = scope.launch {
                 try {
-                    RuntimeInstaller(this@RuntimeSetupService).ensureInstalled(stacks) { progress ->
+                    RuntimeInstaller(this@RuntimeSetupService).ensureInstalled(stacks, agent) { progress ->
                         RuntimeSetupController.update(this@RuntimeSetupService, progress)
                         updateNotification(progress.event == RuntimeInstallEvent.COMMAND_COMPLETED)
                     }
@@ -293,8 +296,6 @@ class RuntimeSetupService : Service() {
         val latest = state.logs.lastOrNull().orEmpty().take(180)
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setLargeIcon(NotificationVisuals.getOrGenerateLargeIcon(this))
-            .setColor(NotificationVisuals.ACCENT_COLOR)
             .setContentTitle("Setting up PocketForge")
             .setContentText(latest.ifBlank { state.message })
             .setStyle(NotificationCompat.BigTextStyle().bigText(latest.ifBlank { state.message }))
@@ -324,8 +325,6 @@ class RuntimeSetupService : Service() {
         val detail = if (success) "Your private coding workspace is ready." else state.errorMessage.orEmpty()
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setLargeIcon(NotificationVisuals.getOrGenerateLargeIcon(this))
-            .setColor(NotificationVisuals.ACCENT_COLOR)
             .setContentTitle(title)
             .setContentText(detail)
             .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
@@ -367,6 +366,7 @@ class RuntimeSetupService : Service() {
         const val ACTION_START = "com.pocketforge.mobile.START_SETUP"
         const val ACTION_STOP = "com.pocketforge.mobile.STOP_SETUP"
         const val EXTRA_STACKS = "selected_stacks"
+        const val EXTRA_AGENT = "selected_agent"
         private const val CHANNEL_ID = "runtime-setup"
         private const val NOTIFICATION_ID = 51
         private const val RESULT_NOTIFICATION_ID = 52
@@ -377,8 +377,6 @@ class RuntimeSetupService : Service() {
             context.getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "PocketForge setup", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "Shows download and installation progress for the private coding environment"
-                    lightColor = NotificationVisuals.ACCENT_COLOR
-                    enableLights(true)
                 },
             )
         }

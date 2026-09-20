@@ -2,7 +2,6 @@ package com.pocketforge.mobile.runtime
 
 import android.content.Context
 import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.system.Os
 import com.pocketforge.mobile.BuildConfig
 import java.io.BufferedInputStream
@@ -27,8 +26,6 @@ import org.json.JSONObject
 data class InstalledRuntime(
     val proot: File,
     val rootfs: File,
-    val claude: File,
-    val version: String,
 )
 
 data class RuntimeInstallProgress(
@@ -39,6 +36,11 @@ data class RuntimeInstallProgress(
     val terminalLine: String? = null,
     val indeterminate: Boolean = false,
     val event: RuntimeInstallEvent = RuntimeInstallEvent.STAGE,
+)
+
+data class AgentUpdateInfo(
+    val installedVersion: String,
+    val latestVersion: String,
 )
 
 enum class RuntimeInstallEvent { STAGE, COMMAND, OUTPUT, DOWNLOAD, COMMAND_COMPLETED, COMPLETED }
@@ -54,29 +56,35 @@ class RuntimeInstaller(private val context: Context) {
     private val runtimeDir = File(context.filesDir, "runtime")
     private val rootfs = File(runtimeDir, "ubuntu")
     private val downloads = File(context.cacheDir, "runtime-downloads")
-    private val marker = File(rootfs, ".pocket-runtime-ready")
+    private val coreReadyMarker = File(rootfs, ".pocket-runtime-ready")
+    private val claudeMarker = File(rootfs, ".pocket-claude-version")
+    // Read only for migration from Core bundles that embedded Claude Code.
     private val bundledClaudeMarker = File(rootfs, ".pocket-bundled-claude-version")
     private val rootfsMarker = File(rootfs, ".pocket-rootfs-version")
     private val languageToolsMarker = File(rootfs, ".pocket-language-tools-version")
     private val coreToolsMarker = File(rootfs, ".pocket-core-tools-version")
     private val systemUpgradeMarker = File(rootfs, ".pocket-system-upgrade-version")
     private val devStacksFile = File(rootfs, ".pocket-dev-stacks.json")
+    private val dshMarker = File(rootfs, ".pocket-dsh-version")
+    private val agyMarker = File(rootfs, ".pocket-agy-version")
+    private val githubCliMarker = File(rootfs, ".pocket-github-cli-version")
+    private val dshAndroidCompatibilityMarker = File(rootfs, ".pocket-dsh-android-compat-version")
     private val macosMetadataRepairMarker = File(rootfs, ".pocket-macos-metadata-repair")
 
     fun isInstalled(): Boolean {
         val proot = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
+        val rootfsLayoutReady = ensureRootfsCompatibilityLinks()
         // Devices set up before staged toolchains keep working through the legacy marker;
         // fresh installs require the new core-tools marker instead.
         val legacyLanguageTools = languageToolsMarker.readTextOrNull() == LANGUAGE_TOOLS_VERSION
-        val coreToolsReady = File(rootfs, "usr/bin/git").exists() &&
-            coreToolsMarker.readTextOrNull() == CORE_TOOLS_VERSION
-        val ready = proot.canExecute() &&
+        val coreToolsReady = File(rootfs, "usr/bin/git").exists() && isSupportedCoreToolsVersion()
+        val ready = rootfsLayoutReady &&
+            proot.canExecute() &&
             File(rootfs, "usr/bin/bash").exists() &&
             rootfsMarker.readTextOrNull() == ROOTFS_VERSION &&
-            File(rootfs, "usr/local/bin/claude").exists() &&
             File(rootfs, "usr/local/bin/node").exists() &&
             (legacyLanguageTools || coreToolsReady) &&
-            marker.exists()
+            coreReadyMarker.exists()
         if (ready) repairLegacyMacosMetadata()
         return ready
     }
@@ -98,12 +106,10 @@ class RuntimeInstaller(private val context: Context) {
 
     /** Returns the already verified runtime without performing network or update checks. */
     fun installedRuntime(): InstalledRuntime {
-        check(isInstalled()) { "Claude Code setup is incomplete. Reopen PocketForge to repair it." }
+        check(isInstalled()) { "Core runtime setup is incomplete. Reopen PocketForge to repair it." }
         return InstalledRuntime(
             proot = File(context.applicationInfo.nativeLibraryDir, "libproot.so"),
             rootfs = rootfs,
-            claude = File(rootfs, "usr/local/bin/claude"),
-            version = marker.readText().trim(),
         )
     }
 
@@ -132,9 +138,15 @@ class RuntimeInstaller(private val context: Context) {
 
     suspend fun ensureInstalled(
         selectedStacks: Set<DevStack> = emptySet(),
+        agent: com.pocketforge.mobile.model.AgentKind = com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ): InstalledRuntime {
-        require(RuntimeCompatibility.isDeviceSupported()) { "PocketForge runtime requires a 64-bit ARM device (arm64-v8a)" }
+        require(
+            supportsArm64Runtime(
+                android.os.Build.SUPPORTED_ABIS,
+                System.getProperty("os.arch"),
+            ),
+        ) { "Unsupported architecture: PocketForge requires an ARM64 device or ARM64 emulator" }
         val proot = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
         require(proot.canExecute()) { "The embedded PRoot launcher is unavailable" }
 
@@ -154,62 +166,21 @@ class RuntimeInstaller(private val context: Context) {
             extractZstdTar(archive, staging)
             stripMacosMetadataArtifacts(staging)
             require(File(staging, "usr/bin/bash").isFile) { "Core bundle is missing Bash" }
-            require(File(staging, "usr/local/bin/claude").isFile) { "Core bundle is missing Claude Code" }
             rootfs.deleteRecursively()
             check(staging.renameTo(rootfs)) { "Could not activate the Linux environment" }
+            check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
             writeResolver()
             if (archive.parentFile == downloads) archive.delete()
         }
 
-        val claude = File(rootfs, "usr/local/bin/claude")
-        check(claude.isFile) { "The Core runtime does not contain Claude Code" }
-        if (!marker.isFile) {
-            val bundledVersion = bundledClaudeMarker.readTextOrNull()
-            require(bundledVersion?.matches(CLAUDE_VERSION_PATTERN) == true) {
-                "The bundled Claude Code version is missing"
-            }
-            marker.writeText(bundledVersion)
-        }
+        check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
+
+        migrateLegacyClaudeMarker()
         ensureSettingsAndHooks()
-
-        if (hasInternetConnection()) {
-            onProgress(RuntimeInstallProgress("Checking the latest Claude Code release", 0.32f))
-            runCatching {
-                val latestVersion = fetchText("https://registry.npmjs.org/@anthropic-ai/claude-code/latest")
-                    .let { JSONObject(it).getString("version") }
-                    .also { require(it.matches(CLAUDE_VERSION_PATTERN)) }
-                if (marker.readText().trim() != latestVersion) {
-                    onProgress(RuntimeInstallProgress("Downloading Claude Code $latestVersion from Anthropic", 0.35f))
-                    val base = "https://downloads.claude.ai/claude-code-releases/$latestVersion"
-                    val manifest = JSONObject(fetchText("$base/manifest.json"))
-                    val checksum = manifest.getJSONObject("platforms").getJSONObject("linux-arm64").getString("checksum")
-                    val downloaded = File(downloads, "claude-$latestVersion")
-                    downloadVerified("$base/linux-arm64/claude", downloaded, checksum) { bytes, total ->
-                        val ratio = if (total > 0) bytes.toFloat() / total else 0f
-                        onProgress(RuntimeInstallProgress("Downloading Claude Code $latestVersion", 0.35f + ratio * 0.20f, bytes, total.takeIf { it > 0 }))
-                    }
-                    onProgress(RuntimeInstallProgress("Verifying Claude Code", 0.56f))
-                    claude.parentFile?.mkdirs()
-                    val staged = File(claude.parentFile, ".claude-$latestVersion.installing")
-                    downloaded.inputStream().use { input -> FileOutputStream(staged).use { input.copyTo(it) } }
-                    Os.chmod(staged.absolutePath, 0b111101101)
-                    Os.rename(staged.absolutePath, claude.absolutePath)
-                    downloaded.delete()
-                    marker.writeText(latestVersion)
-                }
-            }.onFailure {
-                onProgress(RuntimeInstallProgress("Using bundled Claude Code ${marker.readText().trim()}", 0.56f))
-            }
-        } else {
-            onProgress(RuntimeInstallProgress("Offline — using bundled Claude Code ${marker.readText().trim()}", 0.56f))
-        }
-
-        val version = marker.readText().trim()
 
         // Node.js and Git are always available in the Core runtime. Python,
         // C/C++, PHP, and Android remain opt-in stacks during onboarding.
-        val coreNeeded = !File(rootfs, "usr/bin/git").exists() ||
-            coreToolsMarker.readTextOrNull() != CORE_TOOLS_VERSION
+        val coreNeeded = !File(rootfs, "usr/bin/git").exists() || !isSupportedCoreToolsVersion()
         if (coreNeeded) {
             installNodeIfNeeded(proot, 0.58f, 0.66f, onProgress)
         }
@@ -237,11 +208,420 @@ class RuntimeInstaller(private val context: Context) {
             applyStack(proot, stack, from, from + slice, onProgress)
         }
 
-        // The binary and version manifest were already checksum-verified above. Running a
-        // separate `claude --version` probe under PRoot can leave inherited output pipes
-        // open on some Android kernels, so the real user session is the launch check.
+        when (agent) {
+            com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE -> ensureClaudeInstalled(proot, 0.985f, onProgress)
+            com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS -> ensureDshInstalled(proot, 0.985f, onProgress)
+            com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(proot, 0.985f, onProgress)
+        }
         onProgress(RuntimeInstallProgress("Setup complete", 1f))
-        return InstalledRuntime(proot, rootfs, claude, version)
+        return InstalledRuntime(proot, rootfs)
+    }
+
+    /**
+     * Installs one coding agent on demand. Safe to call again: an already-installed
+     * agent returns immediately without network access. Every coding agent is a
+     * separate overlay and is fetched or loaded only when selected.
+     */
+    suspend fun ensureAgentInstalled(
+        agent: com.pocketforge.mobile.model.AgentKind,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val runtime = installedRuntime()
+        when (agent) {
+            com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE -> ensureClaudeInstalled(runtime.proot, 0.05f, onProgress)
+            com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS -> ensureDshInstalled(runtime.proot, 0.05f, onProgress)
+            com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(runtime.proot, 0.05f, onProgress)
+        }
+        onProgress(RuntimeInstallProgress("${agent.title} is ready", 1f))
+    }
+
+    fun isAgentInstalled(agent: com.pocketforge.mobile.model.AgentKind): Boolean {
+        return when (agent) {
+            com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE -> {
+                migrateLegacyClaudeMarker()
+                isInstalled() && File(rootfs, CLAUDE_GUEST_PATH.removePrefix("/")).canExecute() &&
+                    !claudeMarker.readTextOrNull().isNullOrBlank()
+            }
+            com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS -> isInstalled() &&
+                // /usr/local/bin/dsh is an absolute guest symlink. File.exists() follows it
+                // against Android's host root and therefore reports false outside PRoot.
+                File(rootfs, "usr/local/lib/dsh/node_modules/.bin/dsh").isFile &&
+                !dshMarker.readTextOrNull().isNullOrBlank()
+            com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY -> isInstalled() &&
+                File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() &&
+                !agyMarker.readTextOrNull().isNullOrBlank()
+        }
+    }
+
+    val dshVersion: String get() = dshMarker.readTextOrNull().orEmpty()
+
+    val claudeVersion: String get() {
+        migrateLegacyClaudeMarker()
+        return claudeMarker.readTextOrNull().orEmpty()
+    }
+
+    val agyVersion: String get() = agyMarker.readTextOrNull().orEmpty()
+
+    val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
+
+    fun isGitHubCliInstalled(): Boolean = isInstalled() &&
+        File(rootfs, GITHUB_CLI_GUEST_PATH.removePrefix("/")).canExecute() &&
+        githubCliMarker.readTextOrNull() == GITHUB_CLI_VERSION
+
+    /** Installs GitHub's official ARM64 CLI on demand; it is not bundled in the APK. */
+    suspend fun ensureGitHubCliInstalled(onProgress: suspend (RuntimeInstallProgress) -> Unit) {
+        if (isGitHubCliInstalled()) return
+        check(!BuildConfig.OFFLINE_RUNTIME_BUNDLES) {
+            "GitHub sign-in needs the PocketForge online APK."
+        }
+        writeResolver()
+        downloads.mkdirs()
+        val downloaded = File(downloads, "gh-$GITHUB_CLI_VERSION-linux-arm64.tar.gz")
+        onProgress(RuntimeInstallProgress("Downloading official GitHub CLI", 0.05f))
+        downloadVerified(GITHUB_CLI_RELEASE_URL, downloaded, GITHUB_CLI_RELEASE_SHA256) { bytes, total ->
+            val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+            onProgress(
+                RuntimeInstallProgress(
+                    message = "Downloading GitHub CLI $GITHUB_CLI_VERSION",
+                    fraction = 0.05f + ratio * 0.75f,
+                    downloadedBytes = bytes,
+                    totalBytes = total.takeIf { it > 0L },
+                    event = RuntimeInstallEvent.DOWNLOAD,
+                ),
+            )
+        }
+        onProgress(RuntimeInstallProgress("Installing GitHub CLI $GITHUB_CLI_VERSION", 0.85f, indeterminate = true))
+        val destination = File(rootfs, GITHUB_CLI_GUEST_PATH.removePrefix("/"))
+        destination.parentFile?.mkdirs()
+        var found = false
+        TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(downloaded.inputStream()))).use { archive ->
+            var entry = archive.nextEntry
+            while (entry != null) {
+                if (entry.isFile && entry.name.removePrefix("./").endsWith("/bin/gh")) {
+                    val staged = File(destination.parentFile, ".gh-$GITHUB_CLI_VERSION.installing")
+                    FileOutputStream(staged).use { archive.copyTo(it) }
+                    Os.chmod(staged.absolutePath, 0b111101101)
+                    Os.rename(staged.absolutePath, destination.absolutePath)
+                    found = true
+                    break
+                }
+                entry = archive.nextEntry
+            }
+        }
+        check(found) { "Official GitHub CLI archive did not contain the expected binary" }
+        downloaded.delete()
+        verifyGuest(proot = installedRuntime().proot, command = "$GITHUB_CLI_GUEST_PATH --version", failureMessage = "GitHub CLI verification failed")
+        githubCliMarker.writeText(GITHUB_CLI_VERSION)
+        check(isGitHubCliInstalled()) { "GitHub CLI installation is incomplete" }
+        onProgress(RuntimeInstallProgress("GitHub CLI is ready", 1f))
+    }
+
+    /**
+     * Versions recorded after each real agent binary has been installed and verified.
+     * This intentionally reports what is present in PRoot, even when a newer app build
+     * would subsequently offer an agent update.
+     */
+    fun installedAgentVersions(): Map<com.pocketforge.mobile.model.AgentKind, String> = buildMap {
+        migrateLegacyClaudeMarker()
+        claudeMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { isAgentInstalled(com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE) && it.matches(CLAUDE_VERSION_PATTERN) }
+            ?.let { put(com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE, it) }
+
+        dshMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && File(rootfs, "usr/local/lib/dsh/node_modules/.bin/dsh").isFile }
+            ?.let { put(com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS, it) }
+
+        agyMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() }
+            ?.let { put(com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY, it) }
+    }
+
+    /** Checks each installed agent against its own authoritative release source. */
+    suspend fun checkAgentUpdates(): Map<com.pocketforge.mobile.model.AgentKind, AgentUpdateInfo> {
+        val installed = installedAgentVersions()
+        return buildMap {
+            installed[com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE]?.let { current ->
+                runCatching {
+                    JSONObject(fetchText("https://registry.npmjs.org/@anthropic-ai/claude-code/latest")).getString("version")
+                }.getOrNull()?.takeIf { isVersionNewer(it, current) }?.let { latest ->
+                    put(com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE, AgentUpdateInfo(current, latest))
+                }
+            }
+            installed[com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS]?.let { current ->
+                runCatching {
+                    JSONObject(fetchText("https://registry.npmjs.org/@deepseek-ai/dsh/latest")).getString("version")
+                }.getOrNull()?.takeIf { isVersionNewer(it, current) }?.let { latest ->
+                    put(com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS, AgentUpdateInfo(current, latest))
+                }
+            }
+            installed[com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY]?.let { current ->
+                runCatching { fetchAgyManifest().getString("version") }.getOrNull()
+                    ?.takeIf { isVersionNewer(it, current) }?.let { latest ->
+                        put(com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY, AgentUpdateInfo(current, latest))
+                    }
+            }
+        }
+    }
+
+    suspend fun updateAgent(
+        agent: com.pocketforge.mobile.model.AgentKind,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val runtime = installedRuntime()
+        when (agent) {
+            com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE -> updateClaude(runtime, expectedVersion, onProgress)
+            com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS -> updateDsh(runtime, expectedVersion, onProgress)
+            com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY -> updateAgy(runtime, expectedVersion, onProgress)
+        }
+        onProgress(RuntimeInstallProgress("${agent.title} $expectedVersion is ready", 1f, event = RuntimeInstallEvent.COMPLETED))
+    }
+
+    private suspend fun updateClaude(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val latest = JSONObject(fetchText("https://registry.npmjs.org/@anthropic-ai/claude-code/latest")).getString("version")
+        check(latest == expectedVersion) { "A newer Claude Code release appeared. Check again before updating." }
+        val base = "https://downloads.claude.ai/claude-code-releases/$latest"
+        val manifest = JSONObject(fetchText("$base/manifest.json"))
+        val checksum = manifest.getJSONObject("platforms").getJSONObject("linux-arm64").getString("checksum")
+        val downloaded = File(downloads, "claude-$latest")
+        downloadVerified("$base/linux-arm64/claude", downloaded, checksum) { bytes, total ->
+            val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+            onProgress(RuntimeInstallProgress("Downloading Claude Code $latest", ratio * 0.9f, bytes, total.takeIf { it > 0L }, event = RuntimeInstallEvent.DOWNLOAD))
+        }
+        val claude = File(rootfs, CLAUDE_GUEST_PATH.removePrefix("/"))
+        claude.parentFile?.mkdirs()
+        val staged = File(claude.parentFile, ".claude-$latest.installing")
+        downloaded.copyTo(staged, overwrite = true)
+        Os.chmod(staged.absolutePath, 0b111101101)
+        Os.rename(staged.absolutePath, claude.absolutePath)
+        downloaded.delete()
+        verifyGuest(runtime.proot, "$CLAUDE_GUEST_PATH --version", "Claude Code update verification failed")
+        claudeMarker.writeText(latest)
+    }
+
+    private suspend fun updateAgy(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val manifest = fetchAgyManifest()
+        val latest = manifest.getString("version")
+        check(latest == expectedVersion) { "A newer Antigravity release appeared. Check again before updating." }
+        val downloaded = File(downloads, "antigravity-$latest-linux-arm64.tar.gz")
+        downloadVerified(manifest.getString("url"), downloaded, manifest.getString("sha512"), algorithm = "SHA-512") { bytes, total ->
+            val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+            onProgress(RuntimeInstallProgress("Downloading Antigravity CLI $latest", ratio * 0.9f, bytes, total.takeIf { it > 0L }, event = RuntimeInstallEvent.DOWNLOAD))
+        }
+        val destination = File(rootfs, AGY_GUEST_PATH.removePrefix("/"))
+        var found = false
+        TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(downloaded.inputStream()))).use { archive ->
+            var entry = archive.nextEntry
+            while (entry != null) {
+                if (entry.isFile && entry.name.removePrefix("./") == "antigravity") {
+                    val staged = File(destination.parentFile, ".agy-$latest.installing")
+                    FileOutputStream(staged).use { archive.copyTo(it) }
+                    Os.chmod(staged.absolutePath, 0b111101101)
+                    Os.rename(staged.absolutePath, destination.absolutePath)
+                    found = true
+                    break
+                }
+                entry = archive.nextEntry
+            }
+        }
+        downloaded.delete()
+        check(found) { "Antigravity update archive is incomplete" }
+        verifyGuest(runtime.proot, "$AGY_GUEST_PATH --version", "Antigravity update verification failed")
+        agyMarker.writeText(latest)
+    }
+
+    private suspend fun updateDsh(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val latest = JSONObject(fetchText("https://registry.npmjs.org/@deepseek-ai/dsh/latest")).getString("version")
+        check(latest == expectedVersion) { "A newer DeepSeek Harness release appeared. Check again before updating." }
+        val quotedVersion = latest.replace(Regex("[^0-9A-Za-z.+-]"), "")
+        check(quotedVersion == latest) { "Invalid DeepSeek Harness version" }
+        runGuestCommand(
+            proot = runtime.proot,
+            command = "set -e; next=/usr/local/lib/dsh.updating; old=/usr/local/lib/dsh.previous; " +
+                "rm -rf \"${'$'}next\" \"${'$'}old\"; mkdir -p \"${'$'}next\"; " +
+                "cd \"${'$'}next\"; npm init -y >/dev/null; " +
+                "npm install --omit=dev --no-audit --no-fund @deepseek-ai/dsh@$quotedVersion; " +
+                "mv /usr/local/lib/dsh \"${'$'}old\"; " +
+                "if mv \"${'$'}next\" /usr/local/lib/dsh; then rm -rf \"${'$'}old\"; " +
+                "else mv \"${'$'}old\" /usr/local/lib/dsh; exit 1; fi",
+            displayCommand = "npm install @deepseek-ai/dsh@$quotedVersion",
+            fraction = 0.55f,
+            timeoutMs = 20 * 60 * 1_000L,
+            onProgress = onProgress,
+            failureMessage = "DeepSeek Harness update failed; the installed version was preserved",
+        )
+        dshMarker.writeText(latest)
+        dshAndroidCompatibilityMarker.delete()
+        ensureDshAndroidCompatibility()
+        verifyGuest(runtime.proot, "/usr/local/bin/dsh --profile headless --help", "DeepSeek Harness update verification failed")
+    }
+
+    private fun fetchAgyManifest(): JSONObject = JSONObject(
+        fetchText("https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_arm64.json"),
+    )
+
+    private fun isVersionNewer(candidate: String, current: String): Boolean {
+        fun parts(value: String) = Regex("\\d+").findAll(value).map { it.value.toIntOrNull() ?: 0 }.toList()
+        val left = parts(candidate)
+        val right = parts(current)
+        repeat(maxOf(left.size, right.size)) { index ->
+            val comparison = (left.getOrElse(index) { 0 }).compareTo(right.getOrElse(index) { 0 })
+            if (comparison != 0) return comparison > 0
+        }
+        return candidate != current && !candidate.contains("alpha", true) && !candidate.contains("rc", true)
+    }
+
+    /**
+     * Older Core bundles stored Claude Code and its version in Core-owned markers.
+     * Preserve that verified installation when upgrading the app, while all fresh
+     * installs use the independent Claude overlay and marker.
+     */
+    private fun migrateLegacyClaudeMarker() {
+        if (claudeMarker.isFile) return
+        val claude = File(rootfs, CLAUDE_GUEST_PATH.removePrefix("/"))
+        if (!claude.isFile) return
+        val legacyVersion = sequenceOf(
+            coreReadyMarker.readTextOrNull(),
+            bundledClaudeMarker.readTextOrNull(),
+        ).mapNotNull { it?.trim() }.firstOrNull { it.matches(CLAUDE_VERSION_PATTERN) } ?: return
+        claudeMarker.writeText(legacyVersion)
+    }
+
+    private fun isSupportedCoreToolsVersion(): Boolean = coreToolsMarker.readTextOrNull() in setOf(
+        CORE_TOOLS_VERSION,
+        LEGACY_CORE_TOOLS_VERSION,
+    )
+
+    private suspend fun ensureClaudeInstalled(
+        proot: File,
+        fraction: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        migrateLegacyClaudeMarker()
+        if (isAgentInstalled(com.pocketforge.mobile.model.AgentKind.CLAUDE_CODE)) return
+        installRuntimeOverlay(
+            bundle = CLAUDE_BUNDLE,
+            message = "Installing Claude Code $CLAUDE_BUNDLED_VERSION",
+            from = fraction,
+            to = 0.995f,
+            onProgress = onProgress,
+        )
+        verifyGuest(proot, "$CLAUDE_GUEST_PATH --version", "Claude Code verification failed")
+        require(claudeMarker.readTextOrNull() == CLAUDE_BUNDLED_VERSION) {
+            "The Claude Code runtime bundle is incomplete"
+        }
+    }
+
+    private suspend fun ensureAgyInstalled(
+        proot: File,
+        fraction: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        if (isAgentInstalled(com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY)) return
+        installRuntimeOverlay(
+            bundle = AGY_BUNDLE,
+            message = "Installing Antigravity CLI $AGY_VERSION",
+            from = fraction,
+            to = 0.995f,
+            onProgress = onProgress,
+            forceEmbedded = true,
+        )
+        verifyGuest(proot, "$AGY_GUEST_PATH --version", "Antigravity CLI verification failed")
+        agyMarker.writeText(AGY_VERSION)
+        require(isAgentInstalled(com.pocketforge.mobile.model.AgentKind.ANTIGRAVITY)) {
+            "Antigravity CLI installation is incomplete"
+        }
+    }
+
+    private suspend fun ensureDshInstalled(
+        proot: File,
+        fraction: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        if (isAgentInstalled(com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS)) {
+            ensureDshAndroidCompatibility()
+            return
+        }
+        installRuntimeOverlay(
+            bundle = DSH_BUNDLE,
+            message = "Installing DeepSeek Harness $DSH_VERSION",
+            from = fraction,
+            to = 0.995f,
+            onProgress = onProgress,
+        )
+        ensureDshAndroidCompatibility()
+        verifyGuest(proot, "/usr/local/bin/dsh --profile headless --help", "DeepSeek Harness verification failed")
+        require(isAgentInstalled(com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS)) {
+            "The DeepSeek Harness runtime bundle is incomplete"
+        }
+    }
+
+    /**
+     * DSH uses POSIX hard links for no-clobber publication of new session and
+     * workspace files. Android blocks that syscall inside PRoot. PRoot's
+     * `--link2symlink` workaround is unsuitable here because DSH immediately
+     * deletes its staging file, leaving the published symlink dangling.
+     *
+     * The bundled, pinned DSH build can use COPYFILE_EXCL for the same
+     * no-clobber guarantee. Existing-file edits continue to use atomic rename.
+     */
+    fun ensureDshAndroidCompatibility() {
+        if (!isAgentInstalled(com.pocketforge.mobile.model.AgentKind.DEEPSEEK_HARNESS)) return
+        val persistence = File(
+            rootfs,
+            "usr/local/lib/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
+        )
+        val localFs = File(
+            rootfs,
+            "usr/local/lib/dsh/node_modules/@deepseek-ai/dsh-fs-local/lib/index.js",
+        )
+        patchDshHardLinkPublication(
+            file = persistence,
+            importBefore = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";",
+            importAfter = "import { copyFile, link, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";",
+            callBefore = "await link(tmp, finalPath);",
+            callAfter = "await copyFile(tmp, finalPath, 1);",
+        )
+        patchDshHardLinkPublication(
+            file = localFs,
+            importBefore = "import { chmod, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat } from \"node:fs/promises\";",
+            importAfter = "import { chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat } from \"node:fs/promises\";",
+            callBefore = "await linkFile(tempPath, absolutePath);",
+            callAfter = "await copyFile(tempPath, absolutePath, 1);",
+        )
+        dshAndroidCompatibilityMarker.writeText(DSH_ANDROID_COMPATIBILITY_VERSION)
+    }
+
+    private fun patchDshHardLinkPublication(
+        file: File,
+        importBefore: String,
+        importAfter: String,
+        callBefore: String,
+        callAfter: String,
+    ) {
+        check(file.isFile) { "DeepSeek Harness compatibility file is missing: ${file.name}" }
+        var source = file.readText()
+        if (callAfter in source && importAfter in source) return
+        check(callBefore in source && importBefore in source) {
+            "DeepSeek Harness $DSH_VERSION is not compatible with this PocketForge build"
+        }
+        source = source.replace(importBefore, importAfter).replace(callBefore, callAfter)
+        file.writeText(source)
     }
 
     /**
@@ -259,57 +639,106 @@ class RuntimeInstaller(private val context: Context) {
     }
 
     /**
-     * Safely uninstalls an optional development stack, cleaning up associated
-     * binaries, SDK files, and package dependencies while strictly preserving user
-     * workspaces and other toolchains.
+     * Removes an optional development stack without touching projects or the core
+     * Node.js/Git runtime. Package-backed stacks are purged through dpkg; bundled
+     * stacks remove only their dedicated SDK/language directories.
      */
     suspend fun removeStack(
         stack: DevStack,
-        onProgress: suspend (RuntimeInstallProgress) -> Unit = {},
-    ): Result<Unit> = runCatching {
-        val runtime = runCatching { installedRuntime() }.getOrNull()
-        onProgress(RuntimeInstallProgress("Removing ${stack.label} tools…", 0.2f))
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        require(stack != DevStack.WEB) { "Web tools are part of the core runtime and cannot be removed" }
+        val runtime = installedRuntime()
+        if (!isStackInstalled(stack)) return
+
+        onProgress(RuntimeInstallProgress("Removing ${stack.label} tools", 0.1f, indeterminate = true))
         when (stack) {
-            DevStack.ANDROID -> {
-                File(rootfs, "root/.pocket-android-tools-version").delete()
-                File(rootfs, "root/android-sdk").deleteRecursively()
-                File(rootfs, "opt/gradle").deleteRecursively()
-                File(rootfs, "root/maven/localMvnRepository").deleteRecursively()
-                File(rootfs, "root/.gradle/init.d/pocketdev-android.gradle").delete()
-            }
-            DevStack.PYTHON -> {
-                File(rootfs, "usr/local/bin/python3").delete()
-                File(rootfs, "usr/local/bin/pip3").delete()
-                File(rootfs, "usr/local/bin/pip").delete()
-            }
-            DevStack.CPP -> {
-                if (runtime != null) {
-                    runCatching {
-                        aptRemoveInternal(runtime.proot, listOf("build-essential", "cmake", "gdb"), 0.5f, onProgress)
-                    }
-                }
-            }
-            DevStack.PHP -> {
-                File(rootfs, "usr/local/bin/composer").delete()
-                if (runtime != null) {
-                    runCatching {
-                        aptRemoveInternal(runtime.proot, listOf("php-cli", "php-mbstring", "php-xml", "php-curl", "php-zip"), 0.5f, onProgress)
-                    }
-                }
-            }
             DevStack.WEB -> Unit
+            DevStack.PYTHON -> removePythonStack()
+            DevStack.ANDROID -> removeAndroidStack()
+            DevStack.CPP -> aptRemove(
+                runtime.proot,
+                listOf("build-essential", "gcc", "g++", "make", "cmake", "gdb"),
+                0.45f,
+                onProgress,
+            )
+            DevStack.PHP -> {
+                aptRemove(
+                    runtime.proot,
+                    listOf("php-cli", "php-mbstring", "php-xml", "php-curl", "php-zip"),
+                    0.45f,
+                    onProgress,
+                )
+                removePath(File(rootfs, "usr/local/bin/composer"))
+                removePath(File(rootfs, "root/.cache/composer"))
+                removePath(File(rootfs, "root/.composer"))
+            }
         }
-        val state = readDevStackState()
-        state[stack.name] = false
-        writeDevStackState(state)
-        onProgress(RuntimeInstallProgress("${stack.label} tools removed", 1f))
+
+        writeDevStackState(readDevStackState().apply { put(stack.name, false) })
+        onProgress(RuntimeInstallProgress("${stack.label} removed", 1f))
     }
 
-    suspend fun removePythonStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.PYTHON, onProgress)
-    suspend fun removeAndroidStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.ANDROID, onProgress)
-    suspend fun removeCppStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.CPP, onProgress)
-    suspend fun removePhpStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.PHP, onProgress)
-    suspend fun removeWebStack(onProgress: suspend (RuntimeInstallProgress) -> Unit = {}): Result<Unit> = removeStack(DevStack.WEB, onProgress)
+    private fun removePythonStack() {
+        listOf(
+            ".pocket-python-tools-version",
+            "usr/bin/python3",
+            "usr/bin/python3.8",
+            "usr/bin/pip",
+            "usr/bin/pip3",
+            "usr/lib/aarch64-linux-gnu/libpython3.8.so.1",
+            "usr/lib/aarch64-linux-gnu/libpython3.8.so.1.0",
+            "usr/lib/python3",
+            "usr/lib/python3.8",
+            "usr/local/lib/python3.8",
+            "usr/share/python3",
+            "usr/share/python-wheels",
+            "root/.cache/pip",
+        ).forEach { removePath(File(rootfs, it)) }
+    }
+
+    private fun removeAndroidStack() {
+        listOf(
+            "root/android-sdk",
+            "root/maven",
+            "root/.pocket-android-tools-version",
+            "root/.gradle/caches",
+            "root/.gradle/daemon",
+            "root/.gradle/native",
+            "root/.gradle/notifications",
+            "root/.gradle/wrapper/dists",
+            "root/.gradle/init.d/pocketdev-android.gradle",
+            "opt/gradle",
+            "opt/jdk-17.0.20.1+1",
+            "usr/local/bin/jar",
+            "usr/local/bin/jarsigner",
+            "usr/local/bin/java",
+            "usr/local/bin/javac",
+            "usr/local/bin/javadoc",
+            "usr/local/bin/keytool",
+        ).forEach { removePath(File(rootfs, it)) }
+        removeAndroidGradleProperty()
+    }
+
+    private fun removeAndroidGradleProperty() {
+        val properties = File(rootfs, "root/.gradle/gradle.properties")
+        if (!properties.isFile) return
+        val propertyPattern = Regex("^\\s*${Regex.escape(ANDROID_AAPT2_PROPERTY)}\\s*[:=].*$")
+        val remaining = properties.readLines().filterNot { propertyPattern.matches(it) }
+        if (remaining.isEmpty()) {
+            properties.delete()
+        } else {
+            properties.writeText(remaining.joinToString("\n").trimEnd() + "\n")
+        }
+    }
+
+    private fun removePath(file: File) {
+        if (file.isDirectory && !java.nio.file.Files.isSymbolicLink(file.toPath())) {
+            check(file.deleteRecursively()) { "Could not remove ${file.name}" }
+        } else if (file.exists() || java.nio.file.Files.isSymbolicLink(file.toPath())) {
+            check(file.delete()) { "Could not remove ${file.name}" }
+        }
+    }
 
     private suspend fun applyStack(
         proot: File,
@@ -451,11 +880,12 @@ class RuntimeInstaller(private val context: Context) {
         from: Float,
         to: Float,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
+        forceEmbedded: Boolean = false,
     ) {
         // Stack overlays honor the same offline/online flavor as the Core bundle:
         // the offline APK ships every stack bundle inside its assets, while the
         // online APK fetches each one from the release URL on demand.
-        val archive = obtainRuntimeBundle(bundle, preferEmbedded = BuildConfig.OFFLINE_RUNTIME_BUNDLES, from, to * 0.8f + from * 0.2f, onProgress)
+        val archive = obtainRuntimeBundle(bundle, preferEmbedded = forceEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES, from, to * 0.8f + from * 0.2f, onProgress)
         onProgress(RuntimeInstallProgress(message, to * 0.8f + from * 0.2f, indeterminate = true))
         extractZstdTar(archive, rootfs)
         stripMacosMetadataArtifacts(rootfs)
@@ -528,23 +958,12 @@ class RuntimeInstaller(private val context: Context) {
             return destination
         }
 
-        val primaryUrl = "${BuildConfig.RUNTIME_RELEASE_BASE_URL}/${bundle.fileName}"
-        val fallbackUrl = "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4/${bundle.fileName}"
-        val urlsToTry = if (primaryUrl == fallbackUrl) listOf(primaryUrl) else listOf(primaryUrl, fallbackUrl)
-
-        var lastError: Throwable? = null
-        for (url in urlsToTry) {
-            try {
-                downloadVerified(url, destination, bundle.sha256) { downloaded, total ->
-                    val ratio = if (total > 0) downloaded.toFloat() / total else 0f
-                    onProgress(RuntimeInstallProgress("Downloading ${bundle.label} bundle", from + ratio * (to - from), downloaded, total.takeIf { it > 0 }))
-                }
-                return destination
-            } catch (e: Throwable) {
-                lastError = e
-            }
+        val url = "${BuildConfig.RUNTIME_RELEASE_BASE_URL}/${bundle.fileName}"
+        downloadVerified(url, destination, bundle.sha256) { downloaded, total ->
+            val ratio = if (total > 0) downloaded.toFloat() / total else 0f
+            onProgress(RuntimeInstallProgress("Downloading ${bundle.label} bundle", from + ratio * (to - from), downloaded, total.takeIf { it > 0 }))
         }
-        throw (lastError ?: IllegalStateException("Could not download ${bundle.label} bundle"))
+        return destination
     }
 
     private suspend fun installZipAsset(
@@ -815,23 +1234,23 @@ class RuntimeInstaller(private val context: Context) {
         )
     }
 
-    private suspend fun aptRemoveInternal(
+    private suspend fun aptRemove(
         proot: File,
         packages: List<String>,
         fraction: Float,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
+        require(packages.isNotEmpty()) { "No packages selected" }
         val packageNames = packages.joinToString(" ")
         val command = "export DEBIAN_FRONTEND=noninteractive; " +
-            "apt-get -o DPkg::Lock::Timeout=120 remove -y --purge $packageNames && " +
-            "apt-get -o DPkg::Lock::Timeout=120 autoremove -y && " +
-            "apt-get clean"
+            "apt-get -o DPkg::Lock::Timeout=120 purge -y $packageNames && " +
+            "apt-get clean && rm -rf /var/lib/apt/lists/*"
         runGuestCommand(
             proot = proot,
             command = command,
-            displayCommand = "apt-get remove -y $packageNames",
+            displayCommand = "apt-get purge -y $packageNames",
             fraction = fraction,
-            timeoutMs = 15 * 60 * 1_000L,
+            timeoutMs = 20 * 60 * 1_000L,
             onProgress = onProgress,
             failureMessage = "Could not remove: $packageNames",
         )
@@ -919,7 +1338,7 @@ class RuntimeInstaller(private val context: Context) {
                 event = RuntimeInstallEvent.COMMAND_COMPLETED,
             ),
         )
-        check(exit == 0) { collected.toString().trim().takeLast(1_000).ifBlank { failureMessage } }
+        check(exit == 0) { actionableProcessError(collected.toString(), failureMessage) }
     }
 
     private fun sanitizeTerminalLine(raw: String): String = raw
@@ -943,7 +1362,51 @@ class RuntimeInstaller(private val context: Context) {
             ?.let(::readProcessOutputSafely)
             .orEmpty()
             .trim()
-        check(exit == 0) { output.ifBlank { failureMessage } }
+        check(exit == 0) { actionableProcessError(output, failureMessage) }
+    }
+
+    /**
+     * Ubuntu 20.04 uses a merged-/usr layout. A partially extracted or upgraded
+     * runtime can lose these top-level links while all readiness markers remain,
+     * making every ELF executable misleadingly fail with ENOENT. Restore only
+     * the known Ubuntu compatibility links and never replace real directories.
+     */
+    private fun ensureRootfsCompatibilityLinks(): Boolean {
+        if (!rootfs.isDirectory) return false
+        val links = mapOf(
+            "bin" to "usr/bin",
+            "lib" to "usr/lib",
+            "sbin" to "usr/sbin",
+        )
+        return runCatching {
+            links.forEach { (name, destination) ->
+                val link = File(rootfs, name)
+                val path = link.toPath()
+                if (java.nio.file.Files.isSymbolicLink(path)) {
+                    if (java.nio.file.Files.readSymbolicLink(path).toString() != destination) {
+                        java.nio.file.Files.delete(path)
+                        Os.symlink(destination, link.absolutePath)
+                    }
+                } else if (link.exists()) {
+                    check(link.isDirectory) { "Linux /$name is not a directory or symbolic link" }
+                } else {
+                    Os.symlink(destination, link.absolutePath)
+                }
+            }
+            File(rootfs, "usr/bin/env").canExecute() &&
+                File(rootfs, "usr/bin/bash").canExecute() &&
+                File(rootfs, "lib/ld-linux-aarch64.so.1").exists()
+        }.onFailure {
+            android.util.Log.e("RuntimeInstaller", "Could not repair Linux compatibility links", it)
+        }.getOrDefault(false)
+    }
+
+    private fun actionableProcessError(output: String, fallback: String): String {
+        val lines = output.lineSequence().map(String::trim).filter(String::isNotBlank).toList()
+        val primaryProotError = lines.firstOrNull {
+            it.startsWith("proot error:") && !it.contains("can't chmod")
+        } ?: lines.firstOrNull { it.startsWith("proot error:") }
+        return primaryProotError ?: output.trim().takeLast(1_000).ifBlank { fallback }
     }
 
     /**
@@ -967,23 +1430,14 @@ class RuntimeInstaller(private val context: Context) {
 
     suspend fun initializeExisting(onProgress: suspend (RuntimeInstallProgress) -> Unit): InstalledRuntime {
         val installed = installedRuntime()
-        val proot = installed.proot
-        val claude = installed.claude
-        val version = installed.version
         onProgress(RuntimeInstallProgress("Checking private runtime files", 0.15f))
         writeResolver()
         ensureSettingsAndHooks()
         File(context.filesDir, "runtime-bridge").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
         onProgress(RuntimeInstallProgress("Preparing the Android runtime bridge", 0.42f))
-        val probe = process(proot, rootfs, File(rootfs, "root"), emptyMap(), listOf("/usr/local/bin/claude", "--version"))
-        onProgress(RuntimeInstallProgress("Starting Claude Code $version", 0.68f))
-        withTimeout(20_000) {
-            while (probe.isAlive) delay(50)
-        }
-        val exit = probe.waitFor()
-        val output = (probe as? NativeSpawnProcess)?.outputFile?.readText().orEmpty().trim()
-        check(exit == 0) { output.ifBlank { "Claude Code initialization failed (exit $exit)" } }
-        onProgress(RuntimeInstallProgress("Claude Code is ready", 1f))
+        check(File(rootfs, "usr/local/bin/node").canExecute()) { "Core runtime is missing Node.js" }
+        check(File(rootfs, "usr/bin/git").canExecute()) { "Core runtime is missing Git" }
+        onProgress(RuntimeInstallProgress("Private runtime is ready", 1f))
         return installed
     }
 
@@ -994,7 +1448,13 @@ class RuntimeInstaller(private val context: Context) {
         environment: Map<String, String>,
         guestCommand: List<String>,
         guestWorkspacePath: String = "/workspace",
+        emulateHardLinks: Boolean = true,
+        outputFile: File = File(context.cacheDir, "runtime-output-${System.nanoTime()}.log"),
+        pseudoTerminal: Boolean = false,
+        ptyRows: Int = 40,
+        ptyColumns: Int = 120,
     ): Process {
+        check(ensureRootfsCompatibilityLinks()) { "Core runtime has an invalid Linux filesystem layout" }
         require(
             guestWorkspacePath == "/workspace" ||
                 Regex("^/workspace/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$").matches(guestWorkspacePath),
@@ -1008,7 +1468,7 @@ class RuntimeInstaller(private val context: Context) {
         val bridge = File(context.filesDir, "runtime-bridge").apply { mkdirs() }
         val args = buildList {
             add(proot.absolutePath)
-            add("--link2symlink")
+            if (emulateHardLinks) add("--link2symlink")
             add("-0")
             add("-r")
             add(rootfs.absolutePath)
@@ -1063,7 +1523,10 @@ class RuntimeInstaller(private val context: Context) {
                 putAll(environment)
             },
             cwd = context.filesDir.absolutePath,
-            outputFile = File(context.cacheDir, "runtime-output-${System.nanoTime()}.log"),
+            outputFile = outputFile,
+            pseudoTerminal = pseudoTerminal,
+            ptyRows = ptyRows,
+            ptyColumns = ptyColumns,
         )
     }
 
@@ -1146,14 +1609,6 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         val dns = manager.getLinkProperties(manager.activeNetwork)?.dnsServers.orEmpty()
         val servers = dns.mapNotNull { it.hostAddress }.ifEmpty { listOf("8.8.8.8", "1.1.1.1") }
         File(rootfs, "etc/resolv.conf").writeText(servers.joinToString("\n") { "nameserver $it" } + "\n")
-    }
-
-    private fun hasInternetConnection(): Boolean {
-        val manager = context.getSystemService(ConnectivityManager::class.java)
-        val network = manager.activeNetwork ?: return false
-        val capabilities = manager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     private fun extractRootfs(archive: File, destination: File) {
@@ -1366,6 +1821,14 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     private fun File.readTextOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     companion object {
+        const val AGY_GUEST_PATH = "/root/.local/bin/agy"
+        const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
+        private const val AGY_VERSION = "1.1.27"
+        private const val AGY_RELEASE_URL = "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.27-5211191891591168/linux-arm/cli_linux_arm64.tar.gz"
+        private const val AGY_RELEASE_SHA512 = "ed45f6930785aa4b42f14e07ace1c9d91a94fb76e760f54acbd7d3d3951e1f957fd456a0dae2a3124dd9a3b689bf7afb7c9303a3e4ba95037fc10063424d9bf9"
+        private const val GITHUB_CLI_VERSION = "2.100.0"
+        private const val GITHUB_CLI_RELEASE_URL = "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_arm64.tar.gz"
+        private const val GITHUB_CLI_RELEASE_SHA256 = "ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961"
         private const val LEGACY_README = "# Pocket Dev project\n\nThis project is managed locally on Android.\n"
         private const val LEGACY_INDEX = "<!doctype html><title>Pocket Dev</title><h1>Hello from Android</h1>\n"
         private const val ROOTFS_VERSION = "ubuntu-20.04.5-arm64"
@@ -1374,7 +1837,8 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         private const val ROOTFS_SHA256 = "f9b999afb4c4b10193087ea8c11be36d688f19e609b05179b571f29357954b52"
         private const val NODE_VERSION = "v24.19.0"
         private const val LANGUAGE_TOOLS_VERSION = "node-v24.19.0-python3-v1"
-        private const val CORE_TOOLS_VERSION = "core-bundle-2026.09.4"
+        private const val CORE_TOOLS_VERSION = "core-bundle-2026.09.5"
+        private const val LEGACY_CORE_TOOLS_VERSION = "core-bundle-2026.09.4"
         private const val SYSTEM_UPGRADE_VERSION = "ubuntu-maintenance-v1"
         private const val ANDROID_TOOLS_VERSION = "sdk36-build-tools35-gradle8.14.3-maven-2026.09"
         private const val ANDROID_ASSET_BASE = "https://appdevforall.org/dev-assets/debug"
@@ -1388,11 +1852,22 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         private const val ANDROID_AAPT2_GUEST_PATH = "/root/android-sdk/build-tools/35.0.0/aapt2"
         private const val ANDROID_AAPT2_HOST_PATH = "root/android-sdk/build-tools/35.0.0/aapt2"
         private val CLAUDE_VERSION_PATTERN = Regex("[0-9]+\\.[0-9]+\\.[0-9]+")
+        /** Pinned DeepSeek Harness release installed via npm inside the guest (verified 2026-09-06). */
+        const val DSH_VERSION = "0.1.2-rc.1"
+        private const val DSH_ANDROID_COMPATIBILITY_VERSION = "copyfile-excl-v1"
         private val CORE_BUNDLE = RuntimeBundle(
             label = "Core",
-            fileName = "pocketdev-core-arm64-2026.09.4.tar.zst",
-            sha256 = "6b60d21c3441fe0b127baadded253371fa585525e60871fb814ca29b4fed0de0",
-            compressedBytes = 148_844_879L,
+            fileName = "pocketdev-core-arm64-2026.09.5.tar.zst",
+            sha256 = "df0cf7251c74f82d424231e3804114a4ca66b16130eea9abab11e220dc7ac012",
+            compressedBytes = 72_185_773L,
+        )
+        private const val CLAUDE_BUNDLED_VERSION = "2.1.263"
+        private const val CLAUDE_GUEST_PATH = "/usr/local/bin/claude"
+        private val CLAUDE_BUNDLE = RuntimeBundle(
+            label = "Claude Code",
+            fileName = "pocketdev-claude-arm64-2026.09.1.tar.zst",
+            sha256 = "0f68e15630e8c0fc941afe3f61ab5a3eb4407b334018de6dbdabfa5eca627724",
+            compressedBytes = 75_289_800L,
         )
         private val PYTHON_BUNDLE = RuntimeBundle(
             label = "Python",
@@ -1405,6 +1880,18 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             fileName = "pocketdev-android-arm64-2026.09.1.tar.zst",
             sha256 = "01bea058ebcb17416d1eb08c0211b3782da3228eb3c8348eb3719f2d61dd3ec6",
             compressedBytes = 569_652_007L,
+        )
+        private val DSH_BUNDLE = RuntimeBundle(
+            label = "DeepSeek Harness",
+            fileName = "pocketdev-dsh-arm64-2026.09.1.tar.zst",
+            sha256 = "88e6a23ba74e1cd74a2c923b7e0d6bd78ba4b7e5f8a9b649f12bf4ffe158cce5",
+            compressedBytes = 27_752_194L,
+        )
+        private val AGY_BUNDLE = RuntimeBundle(
+            label = "Antigravity CLI",
+            fileName = "pocketdev-agy-arm64-2026.09.1.tar.zst",
+            sha256 = "a659ab9188956fc4721ca86fb21b5118e0e489f47a5e02ae6b4f2fb423659d78",
+            compressedBytes = 41_870_025L,
         )
         private const val MAX_TERMINAL_LINE = 500
         private const val MAX_COLLECTED_OUTPUT = 24_000
