@@ -924,10 +924,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 
     fun toggleTheme() {
-        val next = if (_state.value.themeMode == com.pocketforge.mobile.ui.theme.AppThemeMode.DARK) {
-            com.pocketforge.mobile.ui.theme.AppThemeMode.LIGHT
-        } else {
+        val next = if (_state.value.themeMode.isLightVariant) {
             com.pocketforge.mobile.ui.theme.AppThemeMode.DARK
+        } else {
+            com.pocketforge.mobile.ui.theme.AppThemeMode.LIGHT
         }
         setThemeMode(next)
     }
@@ -2098,15 +2098,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun extractImportedProject(uri: Uri): ImportedZipProject {
         val app = getApplication<Application>()
         val resolver = app.contentResolver
-        var archiveName = "Imported project.zip"
-        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { index ->
-                    archiveName = cursor.getString(index) ?: archiveName
+        var archiveName = ""
+        runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { index ->
+                        archiveName = cursor.getString(index).orEmpty()
+                    }
                 }
             }
         }
-        val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+        if (archiveName.isBlank()) {
+            val segment = uri.lastPathSegment.orEmpty()
+            archiveName = segment.substringAfterLast('/').substringAfterLast(':').ifBlank { "Imported project.zip" }
+        }
+
+        val rawArchiveBaseName = archiveName
+            .replace(Regex("\\.zip$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\.tar\\.gz$", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("[_\\-]+"), " ")
+            .trim()
+
         val projectId = UUID.randomUUID().toString()
         val destination = File(app.filesDir, "workspaces/$projectId")
         destination.mkdirs()
@@ -2151,17 +2163,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             require(entries > 0 && destination.walkTopDown().any { it.isFile }) { "The ZIP does not contain project files" }
-            val preliminary = Project(
-                id = projectId,
-                name = identity.displayName,
-                description = "Imported project workspace",
-                language = "General",
-                slug = identity.slug,
-                kind = ProjectKind.QUICK_PROJECT,
-            )
-            val nestedRoot = detectNestedProjectRoot(preliminary)
+
+            val dummyProject = Project(id = projectId, name = "temp", slug = "temp", description = "", language = "")
+            val nestedRoot = detectNestedProjectRoot(dummyProject)
             val projectRoot = nestedRoot?.let { File(destination, it) } ?: destination
             val metadata = detectImportedProjectMetadata(projectRoot)
+
+            val genericNames = setOf("imported project", "archive", "download", "document", "files", "project", "code", "zip", "upload")
+            val chosenProjectName = when {
+                rawArchiveBaseName.isNotBlank() && rawArchiveBaseName.lowercase() !in genericNames -> {
+                    rawArchiveBaseName.take(60)
+                }
+                !nestedRoot.isNullOrBlank() && nestedRoot.lowercase() !in genericNames -> {
+                    nestedRoot.replace('_', ' ').replace('-', ' ').trim().take(60)
+                }
+                else -> {
+                    val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+                    identity.displayName
+                }
+            }
+
+            val baseSlug = projectSlug(chosenProjectName)
+            val usedSlugs = _state.value.projects.mapTo(mutableSetOf()) { it.slug }
+            val projectSlug = generateSequence(1) { it + 1 }
+                .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+                .first { it !in usedSlugs }
+
             val safeArchiveName = sanitizeAttachmentName(archiveName).let { name ->
                 if (name.endsWith(".zip", ignoreCase = true)) name else "$name.zip"
             }
@@ -2180,10 +2207,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } ?: error("The selected ZIP could not be preserved")
-            val project = preliminary.copy(
-                description = metadata.first,
+            val project = Project(
+                id = projectId,
+                name = chosenProjectName,
+                description = metadata.first.ifBlank { "Imported project workspace" },
                 language = metadata.second,
+                slug = projectSlug,
                 rootPath = nestedRoot.orEmpty(),
+                kind = ProjectKind.PROJECT,
             )
             return ImportedZipProject(
                 project = project,
@@ -2236,7 +2267,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+                    val repoBaseName = repositoryName?.substringAfterLast('/')?.removeSuffix(".git")
+                        ?: normalized.substringAfterLast('/').removeSuffix(".git").ifBlank { "Git Project" }
+                    val cleanRepoName = repoBaseName.replace('_', ' ').replace('-', ' ').trim().take(60)
+                    val baseSlug = projectSlug(repoBaseName)
+                    val usedSlugs = _state.value.projects.mapTo(mutableSetOf()) { it.slug }
+                    val gitSlug = generateSequence(1) { it + 1 }
+                        .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+                        .first { it !in usedSlugs }
                     val projectId = UUID.randomUUID().toString()
                     val workspace = File(getApplication<Application>().filesDir, "workspaces/$projectId").apply { mkdirs() }
                     val output = File(getApplication<Application>().cacheDir, "git-clone-${System.nanoTime()}.log")
@@ -2268,7 +2306,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             workspace,
                             environment,
                             command,
-                            guestWorkspacePath = "/workspace/${identity.slug}",
+                            guestWorkspacePath = "/workspace/$gitSlug",
                             outputFile = output,
                         )
                         val exit = process.waitFor()
@@ -2277,11 +2315,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val metadata = detectImportedProjectMetadata(workspace)
                         Project(
                             id = projectId,
-                            name = identity.displayName,
+                            name = cleanRepoName,
                             description = repositoryName?.let { "GitHub · $it" } ?: "Imported Git repository",
                             language = metadata.second,
-                            slug = identity.slug,
-                            kind = ProjectKind.QUICK_PROJECT,
+                            slug = gitSlug,
+                            kind = ProjectKind.PROJECT,
                         )
                     } catch (error: Throwable) {
                         workspace.deleteRecursively()
@@ -2607,19 +2645,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun renameProject(projectId: String, newName: String) {
+    fun renameProject(projectId: String, newName: String, customSlug: String? = null) {
         val clean = newName.replace(Regex("\\s+"), " ").trim().take(60)
         if (clean.isBlank()) return
-        _state.update { current ->
-            val projects = current.projects.map { project ->
-                if (project.id == projectId) project.copy(name = clean) else project
+        val current = _state.value
+        val existingProject = current.projects.firstOrNull { it.id == projectId } ?: return
+
+        val baseSlug = customSlug?.takeIf { it.isNotBlank() }?.let { projectSlug(it) } ?: projectSlug(clean)
+        val usedSlugs = current.projects
+            .filterNot { it.id == projectId }
+            .mapTo(mutableSetOf()) { it.slug }
+        val newSlug = generateSequence(1) { it + 1 }
+            .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+            .first { it !in usedSlugs }
+
+        if (existingProject.name == clean && existingProject.slug == newSlug) return
+
+        val oldSlug = existingProject.slug
+        val oldGuestRoot = "/workspace/$oldSlug"
+        val newGuestRoot = "/workspace/$newSlug"
+
+        val updatedProject = existingProject.copy(
+            name = clean,
+            slug = newSlug,
+            updatedAtMillis = System.currentTimeMillis(),
+        )
+
+        _state.update { curr ->
+            val projects = curr.projects.map { project ->
+                if (project.id == projectId) updatedProject else project
             }
-            val active = current.activeProject?.let { project ->
-                if (project.id == projectId) project.copy(name = clean) else project
+            val active = if (curr.activeProject?.id == projectId) updatedProject else curr.activeProject
+            val terminalCwd = if (curr.activeProject?.id == projectId) {
+                if (curr.projectTerminalCwd == oldGuestRoot || curr.projectTerminalCwd.startsWith("$oldGuestRoot/")) {
+                    newGuestRoot + curr.projectTerminalCwd.removePrefix(oldGuestRoot)
+                } else {
+                    curr.projectTerminalCwd
+                }
+            } else {
+                curr.projectTerminalCwd
             }
-            current.copy(projects = projects, activeProject = active)
+            curr.copy(
+                projects = projects,
+                activeProject = active,
+                projectTerminalCwd = terminalCwd,
+                toastMessage = "Project & workspace updated to /workspace/$newSlug",
+            )
         }
         preferences.saveProjects(_state.value.projects)
+        if (_state.value.activeProject?.id == projectId) {
+            configureBridgeRoots(updatedProject.id, updatedProject.rootPath)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val historyFile = terminalHistoryFile(projectId)
+                if (historyFile.isFile) {
+                    val text = historyFile.readText()
+                    historyFile.writeText(text.replace("\"$oldGuestRoot", "\"$newGuestRoot"))
+                }
+            }
+            runCatching {
+                if (installer.isInstalled()) {
+                    val rootfs = installer.installedRuntime().rootfs
+                    val oldDir = File(rootfs, "workspace/$oldSlug")
+                    if (oldDir.isDirectory && oldDir.list().isNullOrEmpty()) {
+                        oldDir.delete()
+                    }
+                    val newDir = File(rootfs, "workspace/$newSlug")
+                    newDir.mkdirs()
+                }
+            }
+        }
     }
 
     fun deleteProject(projectId: String) {

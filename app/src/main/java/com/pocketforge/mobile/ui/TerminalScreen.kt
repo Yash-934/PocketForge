@@ -203,7 +203,7 @@ fun TerminalScreen(
                         if (showThemeAction) {
                             IconButton(onClick = onToggleTheme) {
                                 Icon(
-                                    if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                    if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                                     contentDescription = "Toggle theme",
                                 )
                             }
@@ -251,7 +251,7 @@ fun TerminalScreen(
                         if (showThemeAction) {
                             IconButton(onClick = onToggleTheme) {
                                 Icon(
-                                    if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                    if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                                     contentDescription = "Toggle theme",
                                 )
                             }
@@ -295,7 +295,7 @@ fun TerminalScreen(
             }
 
             val isDark = when (themeMode) {
-                AppThemeMode.LIGHT -> false
+                AppThemeMode.LIGHT, AppThemeMode.CLAUDE_LIGHT -> false
                 AppThemeMode.SYSTEM -> isSystemInDarkTheme()
                 else -> true
             }

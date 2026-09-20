@@ -3,6 +3,7 @@ package com.pocketforge.mobile.ui
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -77,6 +78,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -159,7 +161,7 @@ private fun LegacySettingsScreen(
             item {
                 SectionHeader(
                     title = "Appearance",
-                    subtitle = "Customize app theme and styling",
+                    subtitle = "${state.themeMode.title} • ${state.themeMode.subtitle}",
                     icon = Icons.Default.Tune,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -170,15 +172,19 @@ private fun LegacySettingsScreen(
                     ThemeOptionCard(
                         title = "Dark",
                         icon = Icons.Default.DarkMode,
-                        selected = state.themeMode == AppThemeMode.DARK,
-                        onClick = { onSetThemeMode(AppThemeMode.DARK) },
+                        selected = state.themeMode.isDarkVariant,
+                        onClick = {
+                            if (!state.themeMode.isDarkVariant) onSetThemeMode(AppThemeMode.DARK)
+                        },
                         modifier = Modifier.weight(1f),
                     )
                     ThemeOptionCard(
                         title = "Light",
                         icon = Icons.Default.LightMode,
-                        selected = state.themeMode == AppThemeMode.LIGHT,
-                        onClick = { onSetThemeMode(AppThemeMode.LIGHT) },
+                        selected = state.themeMode.isLightVariant,
+                        onClick = {
+                            if (!state.themeMode.isLightVariant) onSetThemeMode(AppThemeMode.LIGHT)
+                        },
                         modifier = Modifier.weight(1f),
                     )
                     ThemeOptionCard(
@@ -188,6 +194,65 @@ private fun LegacySettingsScreen(
                         onClick = { onSetThemeMode(AppThemeMode.SYSTEM) },
                         modifier = Modifier.weight(1f),
                     )
+                }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                Spacer(Modifier.height(12.dp))
+
+                // Dark Theme Options: 4 Cyberpunk themes + Default Dark
+                Text(
+                    text = "Cyberpunk Themes (Dark Options)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val darkOptions = listOf(
+                        Triple(AppThemeMode.JARVIS, "J.A.R.V.I.S", "Arc Reactor Cyan • Holographic Blue Glow"),
+                        Triple(AppThemeMode.STARK, "STARK IND", "Mark Protocol • Holographic Amber Gold"),
+                        Triple(AppThemeMode.VERONICA, "VERONICA", "Veronica Protocol • Crimson Lasers"),
+                        Triple(AppThemeMode.MATRIX, "CYBER MATRIX", "Neural Terminal • Matrix Emerald Green"),
+                        Triple(AppThemeMode.DARK, "Stealth Dark", "Deep Onyx • High Contrast Dark"),
+                    )
+                    darkOptions.forEach { (mode, name, desc) ->
+                        ThemeColorCard(
+                            title = name,
+                            description = desc,
+                            accentColor = Color(mode.hexColor),
+                            selected = state.themeMode == mode,
+                            onClick = { onSetThemeMode(mode) },
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                Spacer(Modifier.height(12.dp))
+
+                // Light Theme Options: Default Light + Claude Style
+                Text(
+                    text = "Light Theme Options",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val lightOptions = listOf(
+                        Triple(AppThemeMode.LIGHT, "Default Light", "Clean Modern • Blue Accent"),
+                        Triple(AppThemeMode.CLAUDE_LIGHT, "Claude Style", "Warm Terracotta & Ivory Paper Cream"),
+                    )
+                    lightOptions.forEach { (mode, name, desc) ->
+                        ThemeColorCard(
+                            title = name,
+                            description = desc,
+                            accentColor = Color(mode.hexColor),
+                            selected = state.themeMode == mode,
+                            onClick = { onSetThemeMode(mode) },
+                        )
+                    }
                 }
             }
 
@@ -822,6 +887,68 @@ private fun ThemeOptionCard(
                 fontSize = 13.sp,
                 color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
             )
+        }
+    }
+}
+
+@Composable
+private fun ThemeColorCard(
+    title: String,
+    description: String,
+    accentColor: Color,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) accentColor.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) accentColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(accentColor)
+                    .then(
+                        if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                        else Modifier
+                    ),
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f),
+                )
+                Text(
+                    text = description,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = accentColor,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
     }
 }

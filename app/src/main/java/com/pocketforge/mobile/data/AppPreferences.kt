@@ -247,7 +247,19 @@ class AppPreferences(private val context: Context) {
                 val name = obj.getString("name")
                 val storedKind = obj.optString("kind", ProjectKind.PROJECT.name)
                 if (!obj.has("kind") || storedKind == "QUICK_CHAT") needsSave = true
-                val requestedSlug = obj.optString("slug").ifBlank { projectSlug(name) }
+                val rawSlug = obj.optString("slug").ifBlank { projectSlug(name) }
+                // Self-heal: If project was renamed (e.g. to "School"), but previously its slug
+                // stayed stuck on an auto-generated pioneer identity like "bold-kalam":
+                val pioneerAdjectives = setOf("bright", "calm", "clever", "curious", "gentle", "nimble", "quiet", "swift", "wise", "bold")
+                val pioneerNames = setOf("turing", "lovelace", "hopper", "tesla", "curie", "ramanujan", "bose", "kalam", "faraday", "darwin")
+                val slugParts = rawSlug.split('-')
+                val isPioneerSlug = slugParts.size >= 2 && slugParts[0] in pioneerAdjectives && slugParts[1] in pioneerNames
+                val requestedSlug = if (isPioneerSlug && projectSlug(name) != rawSlug) {
+                    needsSave = true
+                    projectSlug(name)
+                } else {
+                    rawSlug
+                }
                 var slug = requestedSlug
                 if (!usedSlugs.add(slug)) {
                     slug = "$requestedSlug-${id.take(6)}"

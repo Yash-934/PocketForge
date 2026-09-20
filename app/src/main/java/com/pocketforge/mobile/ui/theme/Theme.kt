@@ -127,25 +127,58 @@ val LightColors = lightColorScheme(
     outlineVariant = Color(0xFF94A3B8),
 )
 
+// Extra Optional Light Theme: Claude Style (Warm terracotta & ivory cream)
+val ClaudeLightColors = lightColorScheme(
+    primary = Color(0xFFD97757),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFFDEEE9),
+    onPrimaryContainer = Color(0xFF4A1A0B),
+    secondary = Color(0xFF9A5E44),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFF5E6DF),
+    onSecondaryContainer = Color(0xFF3A1F13),
+    tertiary = Color(0xFF78716C),
+    onTertiary = Color(0xFFFFFFFF),
+    background = Color(0xFFFAF9F5),
+    onBackground = Color(0xFF1F1E1B),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF1F1E1B),
+    surfaceVariant = Color(0xFFF3F0E8),
+    onSurfaceVariant = Color(0xFF6B665E),
+    outline = Color(0xFFE5E0D5),
+    outlineVariant = Color(0xFFEDE9DF),
+)
+
 enum class AppThemeMode(
     val title: String,
     val subtitle: String,
     val hexColor: Long,
 ) {
-    JARVIS("J.A.R.V.I.S", "CYAN", 0xFF00F0FF),
-    STARK("STARK IND", "AMBER", 0xFFFF9900),
-    VERONICA("VERONICA", "CRIMSON", 0xFFFF0055),
-    MATRIX("CYBER MATRIX", "EMERALD", 0xFF00FF88),
-    DARK("STEALTH DARK", "CYBER ONYX", 0xFF00F0FF),
-    LIGHT("CYBER LIGHT", "HIGH CONTRAST", 0xFF0284C7),
-    SYSTEM("AUTO SYSTEM", "FOLLOW OS", 0xFF38BDF8),
+    DARK("Dark", "Default dark", 0xFF00F0FF),
+    LIGHT("Light", "Default light", 0xFF0284C7),
+    SYSTEM("System", "Follow OS", 0xFF38BDF8),
+
+    // 4 Optional Cyberpunk Themes
+    JARVIS("J.A.R.V.I.S", "Arc Reactor Cyan", 0xFF00F0FF),
+    STARK("STARK IND", "Mark Holographic Amber", 0xFFFF9900),
+    VERONICA("VERONICA", "Veronica Crimson", 0xFFFF0055),
+    MATRIX("CYBER MATRIX", "Neural Matrix Emerald", 0xFF00FF88),
+
+    // Extra Optional Light Theme
+    CLAUDE_LIGHT("Claude Style", "Warm terracotta & ivory", 0xFFD97757);
+
+    val isLightVariant: Boolean
+        get() = this == LIGHT || this == CLAUDE_LIGHT
+
+    val isDarkVariant: Boolean
+        get() = this == DARK || this == JARVIS || this == STARK || this == VERONICA || this == MATRIX
 }
 
 @Composable
 fun PocketTheme(themeMode: AppThemeMode = AppThemeMode.JARVIS, content: @Composable () -> Unit) {
     val isSystemDark = isSystemInDarkTheme()
     val isDark = when (themeMode) {
-        AppThemeMode.LIGHT -> false
+        AppThemeMode.LIGHT, AppThemeMode.CLAUDE_LIGHT -> false
         AppThemeMode.SYSTEM -> isSystemDark
         else -> true
     }
@@ -157,6 +190,7 @@ fun PocketTheme(themeMode: AppThemeMode = AppThemeMode.JARVIS, content: @Composa
         AppThemeMode.MATRIX -> MatrixColors
         AppThemeMode.DARK -> ClassicDarkColors
         AppThemeMode.LIGHT -> LightColors
+        AppThemeMode.CLAUDE_LIGHT -> ClaudeLightColors
         AppThemeMode.SYSTEM -> if (isSystemDark) JarvisColors else LightColors
     }
 

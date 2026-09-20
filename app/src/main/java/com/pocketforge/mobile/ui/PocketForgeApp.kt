@@ -556,7 +556,7 @@ private fun BackgroundTaskSetupScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -836,7 +836,7 @@ private fun RuntimeSetupPromptScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -1480,7 +1480,7 @@ private fun RuntimeInstallationScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -1951,7 +1951,7 @@ private fun StartupErrorScreen(
                 actions = {
                     IconButton(onClick = onToggleTheme) {
                         Icon(
-                            if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Toggle theme",
                         )
                     }
@@ -2303,7 +2303,7 @@ private fun ProviderSetupScreen(
                     if (onToggleTheme != null) {
                         IconButton(onClick = onToggleTheme) {
                             Icon(
-                                if (themeMode == AppThemeMode.DARK) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                if (themeMode.isDarkVariant) Icons.Default.LightMode else Icons.Default.DarkMode,
                                 contentDescription = "Toggle theme",
                             )
                         }
@@ -3072,7 +3072,7 @@ private fun ProjectsScreen(
     onRefreshGitHub: () -> Unit,
     onDisconnectGitHub: () -> Unit,
     onCloneGitHub: (GitHubRepository) -> Unit,
-    onRenameProject: (String, String) -> Unit,
+    onRenameProject: (String, String, String?) -> Unit,
     onDeleteProject: (String) -> Unit,
     onSettings: () -> Unit,
     onPing: () -> Unit,
@@ -3331,7 +3331,7 @@ private fun ProjectsScreen(
                         taskRunning = state.isRunning && state.activeProject?.id == project.id,
                         terminalRunning = state.projectTerminalRunning && state.activeProject?.id == project.id,
                         onOpen = { onOpen(project) },
-                        onRename = { onRenameProject(project.id, it) },
+                        onRename = { newName, newSlug -> onRenameProject(project.id, newName, newSlug) },
                         onDelete = { onDeleteProject(project.id) },
                     )
                 }
@@ -3641,13 +3641,14 @@ private fun ProjectCard(
     taskRunning: Boolean,
     terminalRunning: Boolean,
     onOpen: () -> Unit,
-    onRename: (String) -> Unit,
+    onRename: (newName: String, newSlug: String?) -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuOpen by rememberSaveable(project.id) { mutableStateOf(false) }
     var showRename by rememberSaveable(project.id) { mutableStateOf(false) }
     var showDelete by rememberSaveable(project.id) { mutableStateOf(false) }
     var renameText by rememberSaveable(project.id) { mutableStateOf(project.name) }
+    var renameSlug by rememberSaveable(project.id) { mutableStateOf(projectSlug(project.name)) }
     Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
@@ -3690,7 +3691,12 @@ private fun ProjectCard(
                     DropdownMenuItem(
                         text = { Text("Rename project") },
                         leadingIcon = { Icon(Icons.Default.Edit, null) },
-                        onClick = { menuOpen = false; renameText = project.name; showRename = true },
+                        onClick = {
+                            menuOpen = false
+                            renameText = project.name
+                            renameSlug = projectSlug(project.name)
+                            showRename = true
+                        },
                     )
                     DropdownMenuItem(
                         text = { Text("Delete project") },
@@ -3705,8 +3711,55 @@ private fun ProjectCard(
         AlertDialog(
             onDismissRequest = { showRename = false },
             title = { Text("Rename project") },
-            text = { OutlinedTextField(renameText, { renameText = it }, label = { Text("Project name") }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { onRename(renameText); showRename = false }, enabled = renameText.isNotBlank()) { Text("Save") } },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = {
+                            renameText = it
+                            renameSlug = projectSlug(it)
+                        },
+                        label = { Text("Project name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = renameSlug,
+                        onValueChange = {
+                            renameSlug = projectSlug(it)
+                        },
+                        label = { Text("Workspace folder") },
+                        prefix = {
+                            Text(
+                                "/workspace/",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        supportingText = {
+                            Text(
+                                "Terminal & agent path: /workspace/$renameSlug",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRename(renameText, renameSlug)
+                        showRename = false
+                    },
+                    enabled = renameText.isNotBlank(),
+                ) {
+                    Text("Save")
+                }
+            },
             dismissButton = { TextButton(onClick = { showRename = false }) { Text("Cancel") } },
         )
     }
