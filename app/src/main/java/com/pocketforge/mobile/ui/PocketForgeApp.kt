@@ -4759,6 +4759,17 @@ private fun FilesTab(
                             Spacer(Modifier.width(8.dp))
                             Text("Install APK")
                         }
+                        OutlinedButton(
+                            onClick = {
+                                selectedFileForAction = null
+                                onShareFile(entry)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, null, Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Open with Package Installer / Share")
+                        }
                     }
                     if (isZip) {
                         Button(
